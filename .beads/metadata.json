@@ -1,0 +1,7 @@
+{
+  "database": "dolt",
+  "backend": "dolt",
+  "dolt_mode": "embedded",
+  "dolt_database": "GitNexus",
+  "project_id": "25c1f53e-eb49-427f-a44a-1d7b44893705"
+}
