@@ -2,53 +2,17 @@ import { Suspense, useEffect, useRef, useState, lazy } from 'react';
 import mermaid from 'mermaid';
 import DOMPurify from 'dompurify';
 import { AlertTriangle, Maximize2 } from '@/lib/lucide-icons';
+import { applyBaseMermaidConfig, applyFlowchartConfig } from '../lib/mermaid-init';
 
 const ProcessFlowModal = lazy(() =>
   import('./ProcessFlowModal').then((m) => ({ default: m.ProcessFlowModal })),
 );
 
-// Initialize mermaid with cyan theme matching ProcessFlowModal
-mermaid.initialize({
-  startOnLoad: false,
-  maxTextSize: 900000,
-  theme: 'base',
-  themeVariables: {
-    primaryColor: '#1e293b', // node bg - slate
-    primaryTextColor: '#f1f5f9',
-    primaryBorderColor: '#22d3ee', // cyan
-    lineColor: '#94a3b8',
-    secondaryColor: '#1e293b',
-    tertiaryColor: '#0f172a',
-    mainBkg: '#1e293b',
-    nodeBorder: '#22d3ee', // cyan
-    clusterBkg: '#1e293b',
-    clusterBorder: '#475569',
-    titleColor: '#f1f5f9',
-    edgeLabelBackground: '#0f172a',
-  },
-  flowchart: {
-    curve: 'basis',
-    padding: 15,
-    nodeSpacing: 50,
-    rankSpacing: 50,
-    htmlLabels: true,
-  },
-  sequence: {
-    actorMargin: 50,
-    boxMargin: 10,
-    boxTextMargin: 5,
-    noteMargin: 10,
-    messageMargin: 35,
-  },
-  fontFamily: '"JetBrains Mono", "Fira Code", monospace',
-  fontSize: 13,
-  suppressErrorRendering: true,
-});
-
-// Override the default error handler to prevent it from logging to UI
-mermaid.parseError = (_err) => {
-  // Silent catch
-};
+// Apply theme + safety config once. This component's compact flowchart
+// spacing is applied per-render below so ProcessFlowModal's larger
+// spacing (which used to silently override this depending on dynamic-
+// import order) can't permanently win. (GitNexus-b7r)
+applyBaseMermaidConfig();
 
 interface MermaidDiagramProps {
   code: string;
@@ -65,6 +29,16 @@ export const MermaidDiagram = ({ code }: MermaidDiagramProps) => {
       if (!containerRef.current) return;
 
       try {
+        // Apply this component's compact spacing immediately before render.
+        // (GitNexus-b7r — see src/lib/mermaid-init.ts.)
+        applyFlowchartConfig({
+          curve: 'basis',
+          padding: 15,
+          nodeSpacing: 50,
+          rankSpacing: 50,
+          htmlLabels: true,
+        });
+
         // Generate unique ID for this diagram
         const id = `mermaid-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 

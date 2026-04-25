@@ -9,6 +9,7 @@ import { Copy, Focus, ZoomIn, ZoomOut } from 'lucide-react';
 import mermaid from 'mermaid';
 import DOMPurify from 'dompurify';
 import { ProcessData, generateProcessMermaid } from '../lib/mermaid-generator';
+import { applyBaseMermaidConfig, applyFlowchartConfig } from '../lib/mermaid-init';
 
 interface ProcessFlowModalProps {
   process: ProcessData | null;
@@ -17,41 +18,11 @@ interface ProcessFlowModalProps {
   isFullScreen?: boolean;
 }
 
-// Initialize mermaid with cyan/purple theme matching GitNexus
-// Initialize mermaid with cyan/purple theme matching GitNexus
-mermaid.initialize({
-  startOnLoad: false,
-  suppressErrorRendering: true, // Try to suppress if supported
-  maxTextSize: 900000, // Increase from default 50000 to handle large combined diagrams
-  theme: 'base',
-  themeVariables: {
-    primaryColor: '#1e293b', // node bg
-    primaryTextColor: '#f1f5f9',
-    primaryBorderColor: '#22d3ee',
-    lineColor: '#94a3b8',
-    secondaryColor: '#1e293b',
-    tertiaryColor: '#0f172a',
-    mainBkg: '#1e293b', // background
-    nodeBorder: '#22d3ee',
-    clusterBkg: '#1e293b',
-    clusterBorder: '#475569',
-    titleColor: '#f1f5f9',
-    edgeLabelBackground: '#0f172a',
-  },
-  flowchart: {
-    curve: 'basis',
-    padding: 50,
-    nodeSpacing: 120,
-    rankSpacing: 140,
-    htmlLabels: true,
-  },
-});
-
-// Suppress distinct syntax error overlay
-mermaid.parseError = (err) => {
-  // Suppress visual error - we handle errors in the render try/catch
-  console.debug('Mermaid parse error (suppressed):', err);
-};
+// Apply theme + safety config once. Per-render flowchart spacing is
+// applied inside renderDiagram() so this component's larger spacing
+// doesn't permanently override MermaidDiagram's compact spacing.
+// (GitNexus-b7r)
+applyBaseMermaidConfig();
 
 export const ProcessFlowModal = ({
   process,
@@ -148,6 +119,16 @@ export const ProcessFlowModal = ({
 
     const renderDiagram = async () => {
       try {
+        // Apply this component's spacing IMMEDIATELY before render so
+        // MermaidDiagram's compact spacing doesn't bleed in. (GitNexus-b7r)
+        applyFlowchartConfig({
+          curve: 'basis',
+          padding: 50,
+          nodeSpacing: 120,
+          rankSpacing: 140,
+          htmlLabels: true,
+        });
+
         // Check if we have raw mermaid code (from AI chat) or need to generate it
         const mermaidCode = process.rawMermaid
           ? process.rawMermaid

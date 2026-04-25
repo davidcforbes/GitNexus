@@ -31,8 +31,13 @@ RUN npm prune --omit=dev --prefix gitnexus
 # ── Runtime ────────────────────────────────────────────────────────────
 FROM node:22-trixie-slim AS runtime
 
-# curl for the healthcheck; git so `gitnexus` can clone repos at runtime.
-RUN apt-get update && apt-get install -y --no-install-recommends curl git && rm -rf /var/lib/apt/lists/*
+# curl for the healthcheck; git so `gitnexus` can clone repos at runtime;
+# tini as PID 1 so SIGTERM from `docker stop` / k8s pod eviction is
+# forwarded to node and (transitively) to its tree-sitter / KuzuDB
+# child processes — without this, node-as-PID-1 doesn't reap zombies
+# and never propagates the signal, so the database can corrupt on
+# unclean shutdown. (GitNexus-r16)
+RUN apt-get update && apt-get install -y --no-install-recommends curl git tini && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 
@@ -53,6 +58,9 @@ ENV GITNEXUS_HOME=/data/gitnexus \
     PORT=4747
 
 EXPOSE 4747
+
+# tini becomes PID 1; CMD is exec'd as its child so SIGTERM is forwarded.
+ENTRYPOINT ["/usr/bin/tini", "--"]
 
 # Bind to 0.0.0.0 so the server is reachable from the host's mapped port.
 CMD ["node", "gitnexus/dist/cli/index.js", "serve", "--host", "0.0.0.0", "--port", "4747"]

@@ -726,9 +726,25 @@ export const batchInsertNodesToLbug = async (
     return `'${String(v).replace(/\\/g, '\\\\').replace(/'/g, "''").replace(/\n/g, '\\n').replace(/\r/g, '\\r')}'`;
   };
 
-  // Open a single connection for all inserts
-  const tempDb = new lbug.Database(dbPath);
-  const tempConn = new lbug.Connection(tempDb);
+  // GitNexus-vyy: avoid opening a second native Database when the
+  // module-level singleton is already open on the same path. LadybugDB
+  // uses file-level write locks; on platforms where the lock is
+  // exclusive (containers — see AGENTS.md "LadybugDB file-locking tests
+  // may fail in containers"), opening a second Database while the first
+  // holds the write lock throws immediately. Reuse the singleton when
+  // possible; only open a fresh handle if the singleton is bound to a
+  // different path or not yet initialised.
+  const reuseSingleton = !!conn && !!db && currentDbPath === dbPath;
+  let tempDb: lbug.Database | null = null;
+  let tempConn: lbug.Connection | null = null;
+  let targetConn: lbug.Connection;
+  if (reuseSingleton) {
+    targetConn = conn!;
+  } else {
+    tempDb = new lbug.Database(dbPath);
+    tempConn = new lbug.Connection(tempDb);
+    targetConn = tempConn;
+  }
 
   let inserted = 0;
   let failed = 0;
@@ -761,7 +777,7 @@ export const batchInsertNodesToLbug = async (
           query = `MERGE (n:${t} {id: ${escapeValue(properties.id)}}) SET n.name = ${escapeValue(properties.name)}, n.filePath = ${escapeValue(properties.filePath)}, n.startLine = ${properties.startLine || 0}, n.endLine = ${properties.endLine || 0}, n.content = ${escapeValue(properties.content || '')}${descPart}`;
         }
 
-        await tempConn.query(query);
+        await targetConn.query(query);
         inserted++;
       } catch (e: any) {
         // Don't console.error here - it corrupts MCP JSON-RPC on stderr
@@ -769,12 +785,17 @@ export const batchInsertNodesToLbug = async (
       }
     }
   } finally {
-    try {
-      await tempConn.close();
-    } catch {}
-    try {
-      await tempDb.close();
-    } catch {}
+    // Only close handles WE opened — do NOT close the singleton.
+    if (tempConn) {
+      try {
+        await tempConn.close();
+      } catch {}
+    }
+    if (tempDb) {
+      try {
+        await tempDb.close();
+      } catch {}
+    }
   }
 
   return { inserted, failed };
