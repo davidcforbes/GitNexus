@@ -624,13 +624,25 @@ export const closeLbug = async (repoId?: string): Promise<void> => {
 export const isLbugReady = (repoId: string): boolean => pool.has(repoId);
 
 /** Regex to detect write operations in user-supplied Cypher queries.
- * Note: CALL is NOT blocked — it's used for read-only FTS (CALL QUERY_FTS_INDEX)
- * and vector search (CALL QUERY_VECTOR_INDEX). The database is opened in
- * read-only mode as defense-in-depth against write procedures. */
+ * Note: CALL is NOT blocked at the keyword level — it's used for read-only
+ * FTS (CALL QUERY_FTS_INDEX) and vector search (CALL QUERY_VECTOR_INDEX).
+ * Write-capable CALL procedures are denied separately (see MUTATING_CALL_RE).
+ * The database is also opened in read-only mode as defense-in-depth. */
 export const CYPHER_WRITE_RE =
   /(?<!:)\b(CREATE|DELETE|SET|MERGE|REMOVE|DROP|ALTER|COPY|DETACH|FOREACH|INSTALL|LOAD)\b/i;
 
-/** Check if a Cypher query contains write operations */
+/** Mutating CALL procedures that must be blocked even though we keep CALL
+ * itself unblocked for read-only QUERY_FTS_INDEX / QUERY_VECTOR_INDEX use.
+ * Without this, an agent with cypher access could pass
+ * `CALL CREATE_FTS_INDEX(...)` (and friends) to mutate the index even on a
+ * read-only-opened database — defeating the read-only defense-in-depth.
+ * (GitNexus-z7f) */
+export const MUTATING_CALL_RE =
+  /\bCALL\s+(CREATE_FTS_INDEX|DROP_FTS_INDEX|CREATE_VECTOR_INDEX|DROP_VECTOR_INDEX|REBUILD_VECTOR_INDEX|CREATE_NODE_TABLE|CREATE_REL_TABLE|DROP_TABLE|ALTER_TABLE)\b/i;
+
+/** Check if a Cypher query contains write operations.
+ * Catches keyword-level writes (CREATE/DELETE/...) AND mutating CALL
+ * procedures (CREATE_FTS_INDEX/DROP_FTS_INDEX/...). */
 export function isWriteQuery(query: string): boolean {
-  return CYPHER_WRITE_RE.test(query);
+  return CYPHER_WRITE_RE.test(query) || MUTATING_CALL_RE.test(query);
 }

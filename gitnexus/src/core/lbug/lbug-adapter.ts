@@ -780,12 +780,49 @@ export const batchInsertNodesToLbug = async (
   return { inserted, failed };
 };
 
+/**
+ * Default timeout for executeQuery on the singleton (non-pool) adapter.
+ * Matches the pool adapter's QUERY_TIMEOUT_MS so the two paths have the
+ * same wall-clock ceiling. Override via GITNEXUS_QUERY_TIMEOUT_MS for
+ * trusted internal callers that need longer. (GitNexus-6d1)
+ */
+const DEFAULT_QUERY_TIMEOUT_MS = (() => {
+  const env = process.env.GITNEXUS_QUERY_TIMEOUT_MS;
+  const parsed = env ? Number(env) : NaN;
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : 30_000;
+})();
+
+const withQueryTimeout = <T>(promise: Promise<T>, ms: number, label: string): Promise<T> => {
+  let timer: ReturnType<typeof setTimeout>;
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(
+      () => reject(new Error(`${label} timed out after ${ms}ms`)),
+      ms,
+    );
+  });
+  return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
+};
+
 export const executeQuery = async (cypher: string): Promise<any[]> => {
   if (!conn) {
     throw new Error('LadybugDB not initialized. Call initLbug first.');
   }
 
-  const queryResult = await conn.query(cypher);
+  // NOTE: this singleton path is a SHARED implementation used by both
+  // (a) ingestion / wiki / internal write-paths, which legitimately do
+  // CREATE/MERGE/etc, and (b) the HTTP /api/query route (via withLbugDb).
+  // We deliberately do NOT add an isWriteQuery guard here because (a) needs
+  // writes. The user-input gate lives at the API boundary (api.ts ~line
+  // 782's explicit isWriteQuery check before withLbugDb). The pool adapter
+  // (used by the cypher MCP tool) is the other read-only path and DOES
+  // gate at executeQuery time.
+  // We DO add a wall-clock timeout so a runaway internal query can't
+  // wedge the session-lock indefinitely. (GitNexus-6d1)
+  const queryResult = await withQueryTimeout(
+    conn.query(cypher) as Promise<any>,
+    DEFAULT_QUERY_TIMEOUT_MS,
+    'Query',
+  );
   // LadybugDB uses getAll() instead of hasNext()/getNext()
   // Query returns QueryResult for single queries, QueryResult[] for multi-statement
   const result = Array.isArray(queryResult) ? queryResult[0] : queryResult;
