@@ -153,6 +153,25 @@ withTestLbugDB(
       expect(r3.length).toBeGreaterThanOrEqual(1);
     });
 
+    // ─── Regression test for code-review GitNexus-l73 ────────────────────
+    // Reviewer claimed checkin's waiter handoff doesn't decrement
+    // entry.checkedOut, causing it to grow monotonically and eventually
+    // trip the pool integrity check after enough waiter round-trips.
+    // This test runs 5 sequential waves of 24 queries each (3× the 8-conn
+    // pool size), forcing every wave to drain through the waiter queue
+    // many times. If checkedOut were leaking, by the final wave the
+    // integrity check at checkout would throw before any query ran.
+    it('repeated waiter-queue overflow does not leak checkedOut accounting', async () => {
+      await ensurePool();
+      for (let wave = 0; wave < 5; wave++) {
+        const queries = Array.from({ length: 24 }, () =>
+          executeQuery(REPO, 'MATCH (n:Function) RETURN n.name AS name'),
+        );
+        const results = await Promise.all(queries);
+        expect(results).toHaveLength(24);
+      }
+    });
+
     // ─── Fresh-state tests: need their own init ──────────────────────────
 
     it('concurrent initLbug calls for the same repoId deduplicate', async () => {
