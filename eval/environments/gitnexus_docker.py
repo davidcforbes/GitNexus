@@ -22,6 +22,8 @@ Tool call latency: ~50-100ms via eval-server, ~5-10s via CLI fallback.
 import hashlib
 import json
 import logging
+import re
+import shlex
 import shutil
 import time
 from pathlib import Path
@@ -39,6 +41,11 @@ logger = logging.getLogger("gitnexus_docker")
 
 DEFAULT_CACHE_DIR = Path.home() / ".gitnexus-eval-cache"
 EVAL_SERVER_PORT = 4848
+
+# Allow only short kebab-case identifiers as binary names installed under
+# /usr/local/bin. Catches accidental path separators, shell metacharacters,
+# and absurd lengths. (GitNexus-s81)
+_BIN_NAME_RE = re.compile(r"^[a-z][a-z0-9-]{1,32}$")
 
 
 class GitNexusDockerEnvironment(DockerEnvironment):
@@ -115,7 +122,10 @@ class GitNexusDockerEnvironment(DockerEnvironment):
             logger.info("Installing Node.js in container...")
             install_cmds = [
                 "apt-get update -qq",
-                "apt-get install -y -qq curl ca-certificates",
+                # `jq` is required by the tool_registry.py payload builders
+                # (GitNexus-5c1) — without it, the gitnexus-* shell wrappers
+                # would fail at runtime when called by the agent.
+                "apt-get install -y -qq curl ca-certificates jq",
                 "curl -fsSL https://deb.nodesource.com/setup_20.x | bash -",
                 "apt-get install -y -qq nodejs",
             ]
@@ -125,6 +135,12 @@ class GitNexusDockerEnvironment(DockerEnvironment):
                     raise RuntimeError(f"Failed to install Node.js: {result.get('output', '')}")
         else:
             logger.info(f"Node.js already available: {output}")
+            # Even when Node is preinstalled, ensure jq is present for the
+            # tool_registry.py payload builders (GitNexus-5c1).
+            jq_check = self.execute({"command": "jq --version 2>/dev/null || echo 'NOT_FOUND'"})
+            if "NOT_FOUND" in jq_check.get("output", ""):
+                logger.info("Installing jq in container (required by gitnexus-* tool wrappers)...")
+                self.execute({"command": "apt-get update -qq && apt-get install -y -qq jq", "timeout": 60})
 
     def _install_gitnexus(self):
         """Install the gitnexus npm package globally."""
@@ -246,6 +262,17 @@ class GitNexusDockerEnvironment(DockerEnvironment):
         port = str(self.eval_server_port)
 
         for spec in TOOL_SPECS.values():
+            # GitNexus-s81: validate bin_name BEFORE interpolating into the
+            # heredoc command. Today TOOL_SPECS only contains static names
+            # but if a future entry's bin_name had a path separator or shell
+            # metacharacter (e.g. "../../etc/cron.d/evil"), this command
+            # would write to an arbitrary host path inside the container as
+            # root. Allow only short kebab-case identifiers.
+            if not _BIN_NAME_RE.match(spec.bin_name):
+                raise ValueError(
+                    f"Refusing to install tool with unsafe bin_name {spec.bin_name!r}: "
+                    f"must match {_BIN_NAME_RE.pattern}"
+                )
             script_content = self._render_tool_script(spec, port).strip()
             # Use heredoc with quoted delimiter — prevents all variable expansion and quoting issues
             self.execute({
@@ -290,8 +317,15 @@ class GitNexusDockerEnvironment(DockerEnvironment):
 
             if gitnexus_dir:
                 parent = str(Path(gitnexus_dir).parent)
+                # GitNexus-dyr: shlex.quote `parent` before interpolating
+                # into the shell command. parent is derived from a `find`
+                # output inside the container; without quoting, a directory
+                # with shell metacharacters in its name (possible from
+                # whatever the SWE-bench / agent fixture creates) would
+                # be interpreted by sh.
+                quoted_parent = shlex.quote(parent)
                 self.execute({
-                    "command": f"cd {parent} && tar czf /tmp/gitnexus-cache.tar.gz .",
+                    "command": f"cd {quoted_parent} && tar czf /tmp/gitnexus-cache.tar.gz .",
                     "timeout": 30,
                 })
 
@@ -336,14 +370,20 @@ class GitNexusDockerEnvironment(DockerEnvironment):
                     "command": "npx gitnexus list 2>/dev/null | grep -o '/root/.gitnexus/[^ ]*' | head -1 || echo '/root/.gitnexus/repos/default'"
                 })
                 storage_path = storage_result.get("output", "").strip() or "/root/.gitnexus/repos/default"
-                self.execute({"command": f"mkdir -p {storage_path}"})
+                # GitNexus-dyr: shlex.quote storage_path before interpolating.
+                # Source is `npx gitnexus list` parsed by grep — values come
+                # ultimately from the registry but the parsing pipeline is
+                # fragile, and we never want shell-execution of unexpected
+                # characters in this path.
+                quoted_storage = shlex.quote(storage_path)
+                self.execute({"command": f"mkdir -p {quoted_storage}"})
 
                 sp.run(
                     ["docker", "cp", str(cache_tarball), f"{container_id}:/tmp/gitnexus-cache.tar.gz"],
                     check=True, capture_output=True,
                 )
                 self.execute({
-                    "command": f"cd {storage_path} && tar xzf /tmp/gitnexus-cache.tar.gz",
+                    "command": f"cd {quoted_storage} && tar xzf /tmp/gitnexus-cache.tar.gz",
                     "timeout": 30,
                 })
                 logger.info("GitNexus index restored from cache")
