@@ -205,6 +205,19 @@ export interface EmbeddingProgress {
 export interface EmbeddingConfig {
   /** Model identifier for transformers.js (local) or the HTTP endpoint model name */
   modelId: string;
+  /**
+   * Hugging Face model revision to load. When set, transformers.js will
+   * resolve files from this exact commit / tag instead of `main`, so a
+   * compromise of the upstream `main` branch can't silently swap in a
+   * malicious ONNX model. Override at runtime with the
+   * `GITNEXUS_EMBEDDER_REVISION` environment variable. (GitNexus-b1j)
+   *
+   * Default `null` means "let transformers.js use its own default" —
+   * matches the historical (unpinned) behaviour for users who haven't
+   * opted in to pinning. Security-conscious deployments should set this
+   * to a known-good commit hash.
+   */
+  revision: string | null;
   /** Number of nodes to embed in each batch */
   batchSize: number;
   /** Embedding vector dimensions */
@@ -228,6 +241,7 @@ export interface EmbeddingConfig {
  */
 export const DEFAULT_EMBEDDING_CONFIG: EmbeddingConfig = {
   modelId: 'Snowflake/snowflake-arctic-embed-xs',
+  revision: null,
   batchSize: 16,
   dimensions: 384,
   device: 'auto',

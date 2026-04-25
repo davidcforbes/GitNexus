@@ -106,6 +106,24 @@ let currentDevice: 'dml' | 'cuda' | 'cpu' | 'wasm' | null = null;
 export type ModelProgressCallback = (progress: ModelProgress) => void;
 
 /**
+ * Pick the Hugging Face revision the embedder should pin to. Precedence:
+ * 1. `GITNEXUS_EMBEDDER_REVISION` env var (runtime override, wins everywhere)
+ * 2. `EmbeddingConfig.revision` (set programmatically or via config file)
+ * 3. `undefined` — let transformers.js use its own default ("main")
+ *
+ * Exported (and pure) so tests can lock in the precedence without going
+ * through the full pipeline() boot. (GitNexus-b1j)
+ */
+export const resolveEmbedderRevision = (
+  configRevision: string | null | undefined,
+): string | undefined => {
+  const envRevision = process.env.GITNEXUS_EMBEDDER_REVISION;
+  if (envRevision && envRevision.length > 0) return envRevision;
+  if (configRevision && configRevision.length > 0) return configRevision;
+  return undefined;
+};
+
+/**
  * Get the current device being used for inference
  */
 export const getCurrentDevice = (): 'dml' | 'cuda' | 'cpu' | 'wasm' | null => currentDevice;
@@ -200,12 +218,22 @@ export const initEmbedder = async (
             console.log('🔧 Using WASM backend (slower)...');
           }
 
-          embedderInstance = await (pipeline as any)('feature-extraction', finalConfig.modelId, {
+          // Pin the model revision when configured. (GitNexus-b1j)
+          const pinnedRevision = resolveEmbedderRevision(finalConfig.revision);
+          const pipelineOpts: Record<string, unknown> = {
             device: device,
             dtype: 'fp32',
             progress_callback: progressCallback,
             session_options: { logSeverityLevel: 3 },
-          });
+          };
+          if (pinnedRevision) {
+            pipelineOpts.revision = pinnedRevision;
+          }
+          embedderInstance = await (pipeline as any)(
+            'feature-extraction',
+            finalConfig.modelId,
+            pipelineOpts,
+          );
           currentDevice = device;
 
           if (isDev) {
@@ -350,7 +378,11 @@ export const embeddingToArray = (embedding: Float32Array): number[] => {
 
 /**
  * Cleanup the embedder (free memory)
- * Call this when done with embeddings
+ * Call this when done with embeddings.
+ *
+ * Also resets `isInitializing` and `currentDevice` so that any subsequent
+ * `initEmbedder` call sees a clean slate even if dispose runs concurrently
+ * with an in-flight init's pipeline() resolution. (GitNexus-4fq defensive)
  */
 export const disposeEmbedder = async (): Promise<void> => {
   if (embedderInstance) {
@@ -364,5 +396,7 @@ export const disposeEmbedder = async (): Promise<void> => {
     }
     embedderInstance = null;
     initPromise = null;
+    isInitializing = false;
+    currentDevice = null;
   }
 };
