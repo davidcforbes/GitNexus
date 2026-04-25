@@ -6,6 +6,41 @@ import { DEFAULT_BACKEND_URL } from '../config/ui-constants';
 
 const LS_URL_KEY = 'gitnexus-backend-url';
 
+/**
+ * Validate a candidate backend URL before we trust it. localStorage is
+ * shared with any XSS in the same origin and any browser extension; if a
+ * malicious value lands there, we'd otherwise auto-probe and route every
+ * subsequent API call to it. Restrict to:
+ *   - http(s) scheme
+ *   - hostname is exactly "localhost" or 127.0.0.1 (or the configured
+ *     DEFAULT_BACKEND_URL host — covers the Docker-bridge default).
+ * (GitNexus-a2v)
+ */
+const isSafeBackendUrl = (raw: string): boolean => {
+  if (!raw) return false;
+  let parsed: URL;
+  try {
+    parsed = new URL(raw);
+  } catch {
+    return false;
+  }
+  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return false;
+  // Strip surrounding brackets that URL.hostname leaves on IPv6 literals.
+  const rawHost = parsed.hostname.toLowerCase();
+  const host =
+    rawHost.startsWith('[') && rawHost.endsWith(']') ? rawHost.slice(1, -1) : rawHost;
+  if (host === 'localhost' || host === '127.0.0.1' || host === '::1') return true;
+  // Allow the project's configured default (covers users who change
+  // DEFAULT_BACKEND_URL via env at build time).
+  try {
+    const defaultHost = new URL(DEFAULT_BACKEND_URL).hostname.toLowerCase();
+    if (host === defaultHost) return true;
+  } catch {
+    /* falls through to false */
+  }
+  return false;
+};
+
 // ── Public interface ─────────────────────────────────────────────────────────
 
 export interface UseBackendResult {
@@ -28,7 +63,19 @@ export interface UseBackendResult {
 export function useBackend(): UseBackendResult {
   const [backendUrl] = useState<string>(() => {
     try {
-      return localStorage.getItem(LS_URL_KEY) ?? DEFAULT_BACKEND_URL;
+      const stored = localStorage.getItem(LS_URL_KEY);
+      if (stored && isSafeBackendUrl(stored)) return stored;
+      // Stored value is missing, malformed, or points outside the safe
+      // host allowlist (potentially planted by XSS or a bad extension).
+      // Reset to the default so we never auto-probe an arbitrary host.
+      if (stored) {
+        try {
+          localStorage.removeItem(LS_URL_KEY);
+        } catch {
+          /* ignore — quota / strict-mode storage */
+        }
+      }
+      return DEFAULT_BACKEND_URL;
     } catch {
       return DEFAULT_BACKEND_URL;
     }

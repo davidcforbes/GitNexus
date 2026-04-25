@@ -232,15 +232,24 @@ export const createChatModel = (config: ProviderConfig): BaseChatModel => {
         throw new Error('MiniMax API key is required but was not provided');
       }
 
-      return new ChatAnthropic({
-        anthropicApiKey: minimaxConfig.apiKey,
-        model: minimaxConfig.model,
+      // Use ChatOpenAI against MiniMax's OpenAI-compatible endpoint instead
+      // of ChatAnthropic against the Anthropic-compatible one. With
+      // ChatAnthropic the @langchain/anthropic SDK constructs an HTTP
+      // client whose default URL is api.anthropic.com and may issue
+      // validation requests before clientOptions.baseURL takes effect —
+      // potentially leaking the MiniMax key to Anthropic. ChatOpenAI is
+      // configured baseURL-first via the same `configuration` block we use
+      // for GLM and OpenRouter, eliminating the ambiguity. (GitNexus-hn0)
+      return new ChatOpenAI({
+        apiKey: minimaxConfig.apiKey,
+        modelName: minimaxConfig.model,
         temperature: minimaxConfig.temperature ?? 0.1,
         maxTokens: minimaxConfig.maxTokens ?? 8192,
-        streaming: true,
-        clientOptions: {
-          baseURL: 'https://api.minimax.io/anthropic',
+        configuration: {
+          apiKey: minimaxConfig.apiKey,
+          baseURL: 'https://api.minimax.io/v1',
         },
+        streaming: true,
       });
     }
 

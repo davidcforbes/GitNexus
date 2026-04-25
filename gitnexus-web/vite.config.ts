@@ -27,9 +27,20 @@ export default defineConfig({
     },
   },
   server: {
-    // Allow serving files from node_modules
+    // Restrict the dev server's filesystem access to exactly the paths
+    // we need: this package, the sibling gitnexus-shared workspace (for
+    // its dist/), and the gitnexus package's package.json (read at
+    // config time only). The previous `['..']` allowed the dev server
+    // to serve any file in the monorepo or its parent directory —
+    // including .env files, ~/.ssh on a shallow checkout, and the
+    // gitnexus CLI source. (GitNexus-coz)
     fs: {
-      allow: ['..'],
+      allow: [
+        path.resolve(__dirname),
+        path.resolve(__dirname, '..', 'gitnexus-shared'),
+        path.resolve(__dirname, '..', 'gitnexus', 'package.json'),
+      ],
+      strict: true,
     },
   },
 });

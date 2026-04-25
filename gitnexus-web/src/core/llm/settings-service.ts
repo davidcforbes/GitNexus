@@ -88,12 +88,20 @@ export const loadSettings = (): LLMSettings => {
     const legacyData = typeof localStorage !== 'undefined' ? readSettings(localStorage) : null;
     if (legacyData) {
       const merged = mergeWithDefaults(legacyData);
+      // Always remove the legacy localStorage entry, even if the
+      // sessionStorage write fails (e.g., quota / private browsing).
+      // The previous order let the API key persist in localStorage —
+      // defeating the migration's purpose. (GitNexus-82s)
+      if (typeof localStorage !== 'undefined') {
+        try {
+          localStorage.removeItem(STORAGE_KEY);
+        } catch (cleanupErr) {
+          console.warn('Failed to clear legacy localStorage LLM settings:', cleanupErr);
+        }
+      }
       try {
         if (typeof sessionStorage !== 'undefined') {
           writeSettings(sessionStorage, merged);
-        }
-        if (typeof localStorage !== 'undefined') {
-          localStorage.removeItem(STORAGE_KEY);
         }
       } catch (error) {
         console.warn('Failed to migrate legacy LLM settings to sessionStorage:', error);
