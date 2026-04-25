@@ -146,6 +146,39 @@ withTestLbugDB(
           const result = await deleteNodesForFile('/absolutely/nonexistent/path/file.ts');
           expect(result).toEqual({ deletedNodes: 0 });
         });
+
+        // Regression for GitNexus-kdz: Cypher injection via backslash/quote
+        // escape ordering. A filePath ending in `\` followed by `'` could,
+        // before the fix, terminate the string literal early and inject
+        // arbitrary Cypher (e.g. an unconstrained DETACH DELETE).
+        it('deleteNodesForFile escapes backslash+quote payloads safely', async () => {
+          const { deleteNodesForFile, executeQuery } = await import(
+            '../../src/core/lbug/lbug-adapter.js'
+          );
+
+          // Snapshot the function count before the malicious call. The seed
+          // graph has 2 Function nodes; if injection succeeded the wildcard
+          // DELETE would drop both.
+          const before = await executeQuery('MATCH (n:Function) RETURN count(n) AS c');
+          const beforeCount = Number(before[0]?.c ?? 0);
+          expect(beforeCount).toBeGreaterThanOrEqual(2);
+
+          // Payload: a path that, before the fix, would have escaped the
+          // literal — `\` (unescaped backslash) + `'` (closes string) +
+          // `; MATCH (n:Function) DETACH DELETE n; //` (injection).
+          const malicious =
+            "no-such-file.ts\\'; MATCH (n:Function) DETACH DELETE n; //";
+          const result = await deleteNodesForFile(malicious);
+
+          // The malicious payload doesn't match any node, so 0 should be deleted
+          expect(result.deletedNodes).toBe(0);
+
+          // And critically, no Function nodes from the seed graph should have
+          // been wiped by the injected statement.
+          const after = await executeQuery('MATCH (n:Function) RETURN count(n) AS c');
+          const afterCount = Number(after[0]?.c ?? 0);
+          expect(afterCount).toBe(beforeCount);
+        });
       });
     });
   },

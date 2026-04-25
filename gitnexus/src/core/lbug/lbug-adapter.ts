@@ -530,6 +530,23 @@ const escapeTableName = (table: string): string => {
   return BACKTICK_TABLES.has(table) ? `\`${table}\`` : table;
 };
 
+/**
+ * Escape a string for safe interpolation inside a single-quoted Cypher string
+ * literal. Backslashes MUST be escaped first — otherwise a trailing `\` in the
+ * input would consume the closing quote that the `''` doubling produces and
+ * allow the next character to terminate the string literal early (Cypher
+ * injection). See GitNexus-kdz / -742.
+ *
+ * Returns the inner content only (NOT wrapped in quotes), matching how
+ * deleteNodesForFile interpolates the result inside its own template literal.
+ */
+const escapeCypherStringContent = (s: string): string =>
+  s
+    .replace(/\\/g, '\\\\')
+    .replace(/'/g, "''")
+    .replace(/\n/g, '\\n')
+    .replace(/\r/g, '\\r');
+
 /** Fallback: insert relationships one-by-one if COPY fails */
 const fallbackRelationshipInserts = async (
   validRelLines: string[],
@@ -554,12 +571,12 @@ const fallbackRelationshipInserts = async (
       const confidence = parseFloat(confidenceStr) || 1.0;
       const step = parseInt(stepStr) || 0;
 
-      const esc = (s: string) =>
-        s.replace(/'/g, "''").replace(/\\/g, '\\\\').replace(/\n/g, '\\n').replace(/\r/g, '\\r');
+      // Use the shared escaper — backslashes MUST be escaped before single
+      // quotes (see escapeCypherStringContent and GitNexus-742 / -kdz).
       await conn.query(`
-        MATCH (a:${escapeLabel(fromLabel)} {id: '${esc(fromId)}' }),
-              (b:${escapeLabel(toLabel)} {id: '${esc(toId)}' })
-        CREATE (a)-[:${REL_TABLE_NAME} {type: '${esc(relType)}', confidence: ${confidence}, reason: '${esc(reason)}', step: ${step}}]->(b)
+        MATCH (a:${escapeLabel(fromLabel)} {id: '${escapeCypherStringContent(fromId)}' }),
+              (b:${escapeLabel(toLabel)} {id: '${escapeCypherStringContent(toId)}' })
+        CREATE (a)-[:${REL_TABLE_NAME} {type: '${escapeCypherStringContent(relType)}', confidence: ${confidence}, reason: '${escapeCypherStringContent(reason)}', step: ${step}}]->(b)
       `);
     } catch {
       // skip
@@ -1081,7 +1098,10 @@ export const deleteNodesForFile = async (
 
   try {
     let deletedNodes = 0;
-    const escapedPath = filePath.replace(/'/g, "''");
+    // Escape backslashes BEFORE single quotes — otherwise a path ending in `\`
+    // followed by `'` lets the input terminate the string literal early
+    // (Cypher injection). See GitNexus-kdz.
+    const escapedPath = escapeCypherStringContent(filePath);
 
     // Delete nodes from each table that has filePath
     // DETACH DELETE removes the node and all its relationships
