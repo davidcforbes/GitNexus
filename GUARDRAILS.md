@@ -78,8 +78,28 @@ Stop and ask a **human maintainer** when:
 
 ---
 
+## Safety knobs (environment variables)
+
+The hardening sweep added a number of opt-in / opt-out env vars for operators of `gitnexus serve`, the MCP server, the indexer, and the eval harness. All are off / generous-default by default — set them only when you have a reason.
+
+| Variable | Default | Purpose | Set when |
+|----------|---------|---------|----------|
+| `GITNEXUS_ALLOW_LAN_ORIGINS` | unset | When `1`, CORS accepts RFC 1918 LAN origins (HTTPS still required). | Intentional intranet deployment of `gitnexus serve` behind a TLS-terminating proxy. |
+| `GITNEXUS_API_QUERY_MAX_ROWS` | `1000` | Cap on `POST /api/query` row materialisation. | Trusted internal callers that need bigger result sets. |
+| `GITNEXUS_QUERY_TIMEOUT_MS` | `30000` | Wall-clock timeout on the singleton `lbug-adapter.executeQuery`. | Long-running internal analysis queries. |
+| `GITNEXUS_CHUNK_WALL_TIMEOUT_MS` | `1800000` (30 min) | Per-chunk wall-clock ceiling in the ingestion worker pool. | Indexing very large repos (raise to keep workers alive longer). |
+| `GITNEXUS_MCP_MAX_SESSIONS` | `64` | Cap on concurrent MCP HTTP sessions before new initialize POSTs get 503. | Multi-tenant deployments serving many editors. |
+| `GITNEXUS_LBUG_STRICT_PATH` | unset | When `1`, refuse to open lbug DBs whose `dbPath` traverses a symlink (defense-in-depth against `INSTALL VECTOR` extension-load bypass). | Hardened deployments that don't legitimately use symlinked HOME / `.gitnexus` dirs. |
+| `GITNEXUS_EMBEDDER_REVISION` | unset | HF Hub commit to pin the embedding model to. | Air-gapped or supply-chain-conscious deployments. |
+| `GITNEXUS_PIN_VERSION` | auto-detect | Eval-harness override for `npm install -g gitnexus@<version>`. | Reproducible eval runs against a non-default gitnexus build. |
+
+See `CHANGELOG.md` § "Security & stability hardening sweep" for the issue-by-issue rationale behind each knob.
+
+---
+
 ## Related docs
 
 - [ARCHITECTURE.md](ARCHITECTURE.md) — components and data flow
 - [RUNBOOK.md](RUNBOOK.md) — commands for recovery
 - [CONTRIBUTING.md](CONTRIBUTING.md) — PR and commit expectations
+- [CHANGELOG.md](CHANGELOG.md) — full history of changes

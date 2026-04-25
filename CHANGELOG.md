@@ -4,6 +4,45 @@ All notable changes to GitNexus will be documented in this file.
 
 ## [Unreleased]
 
+### Security & stability hardening sweep (2026-04-25 — fork branch `fix/code-review-2026-04-25`)
+
+Closed 77 review-flagged findings across the MCP server, HTTP API, CLI, indexer, web UI, eval harness, Docker images, and Kubernetes policy. Highlights:
+
+**Security**
+- Cypher escape ordering — `escapeCypherStringContent` helper escapes `\\` before `'` (prevents string-literal escape via Windows path or crafted symbol name; closes deleteNodesForFile + fallbackRelationshipInserts).
+- Mutating `CALL` block — `pool-adapter.isWriteQuery` now rejects `CALL CREATE_FTS_INDEX` / `DROP_FTS_INDEX` / `CREATE_VECTOR_INDEX` / etc. on top of existing keyword block.
+- `/api/query` row cap — streams via `streamQuery` and stops at `GITNEXUS_API_QUERY_MAX_ROWS` (default 1000); returns `truncated: true` flag. Closes the unbounded-result OOM path.
+- CORS LAN default-deny — RFC 1918 origins now rejected by default; opt back in with `GITNEXUS_ALLOW_LAN_ORIGINS=1` and HTTPS required.
+- `/api/analyze` Windows path validation — rejects UNC, DOS device-namespace (`\\?\`, `\\.\`), and NUL-byte paths.
+- MCP session cap + ID validation — `mcp-session-id` header shape-checked; new sessions refused at `GITNEXUS_MCP_MAX_SESSIONS` (default 64). Prevents session-map flood OOM.
+- Git-clone SSRF guard runs on `git pull` re-clone path too; `extractRepoName` validates against strict allowlist (rejects `..`, URL-encoded separators, NUL bytes, Windows reserved names).
+- LLM API-key redactor — bearer / `sk-*` / `x-api-key` patterns stripped from error messages before they surface in CLI / CI logs.
+- Wiki LLM prompt-injection mitigation — system-prompt "treat source as DATA" rule + `BEGIN_SOURCE_CODE` / `END_SOURCE_CODE` fences around interpolated source.
+- Embedder model revision pinning via `GITNEXUS_EMBEDDER_REVISION` (HF Hub commit).
+- Web UI: DOMPurify hardening (`FORBID_TAGS` + `FORBID_ATTR` for SVG `foreignObject` content); Vite dev `fs.allow` narrowed from `['..']` to specific paths; bridge-mode backend URL validated against localhost allowlist; sessionStorage migration order fixed; MiniMax provider switched to `ChatOpenAI` against the OpenAI-compatible endpoint.
+- Eval harness: `tool_registry.py` payload builders use `jq -n --arg`; `gitnexus_docker.py` `shlex.quote`s container-derived paths; NodeSource installer uses signed-by apt repo with GPG fingerprint verification (replaces `curl | bash`); `_install_gitnexus` pins to the package version via `GITNEXUS_PIN_VERSION`.
+- ClusterImagePolicy accepts both stable (`docker.yml@refs/tags/v*`) and RC (`docker.yml@refs/heads/main`) signing identities; image globs tightened to exact basename + `:*`/`@*` suffix.
+- `softprops/action-gh-release` SHA pin comment corrected from `# v2` to `# v3.0.0` (the SHA was already on tag v3.0.0).
+- `claude.yml` / `claude-code-review.yml`: removed `allowed_non_write_users: '*'` so the action's internal gate matches the outer `if:` guard.
+
+**Stability**
+- Atomic `registry.json` + `.gitignore` writes (temp + rename, EPERM/EBUSY retry on Windows); in-process mutation lock prevents lost-update races between concurrent `analyze` calls.
+- `listRegisteredRepos({validate})` is read-only by default (no auto-prune side effect on `gitnexus list`); explicit `pruneStaleRegistryEntries()` for callers that want it.
+- Worker-pool wall-clock ceiling per chunk (default 30 min, override `GITNEXUS_CHUNK_WALL_TIMEOUT_MS`); single sub-batch can no longer reset its way to running indefinitely.
+- Singleton `lbug-adapter.executeQuery` wraps queries in `withTimeout` (default 30 s, override `GITNEXUS_QUERY_TIMEOUT_MS`).
+- Optional symlink-strict path check on lbug open (`GITNEXUS_LBUG_STRICT_PATH=1`).
+- Filesystem-walker logs unexpected (non-ENOENT/EISDIR/EPERM/EACCES) read failures; sequential parser-crash path now logs in parity with the worker path.
+- `analyze` SIGINT handler restores `console.*` before `closeLbug()`; `setup.ts` skips symlinks during recursive copy.
+- Dockerfile.cli adds `tini` as PID 1 — SIGTERM forwarded to node + native children, protects KuzuDB from corruption on `docker stop`.
+- `c3Linearize` always allocates a fresh `visiting` set per top-level call (defensive).
+- Web UI: `GraphStateProvider` cleans up on unmount; `useBackend` auto-probe gated to localhost origins; `fetchOpenRouterModels` honours user `baseUrl` and uses `AbortSignal.timeout(10s)`; Mermaid init centralized so per-component spacing wins per render.
+
+**Code quality**
+- Vue template-component branch hoisted from shared `call-processor.ts` + `parse-worker.ts` to a new `LanguageProvider.auxiliaryCallNamesFromSource` hook implemented in `vue.ts`.
+- TS/JS/Rust/C/C++ language branches in shared `import-resolvers/standard.ts` hoisted to a `per-language-behavior.ts` registry; shared resolver dispatches via `getImportBehavior(language)`.
+- Confidence-scale unification: scope-resolution CALLS edges now use `TIER_CONFIDENCE['same-file']` (0.95) / `['import-scoped']` (0.9) instead of a flat 0.85 magic number.
+- Test infrastructure: `gitnexus-web/test/setup.ts` installs an in-memory Storage shim so the Node v25 built-in `localStorage` global doesn't shadow jsdom's Storage and break the suite.
+
 ### Changed
 - Migrated from KuzuDB to LadybugDB v0.15 (`@ladybugdb/core`, `@ladybugdb/wasm-core`)
 - Renamed all internal paths from `kuzu` to `lbug` (storage: `.gitnexus/kuzu` → `.gitnexus/lbug`)

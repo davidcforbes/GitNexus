@@ -1,4 +1,7 @@
 # GitNexus
+
+> **Hardening fork notice.** This is `davidcforbes/GitNexus`, a fork of [`abhigyanpatwari/GitNexus`](https://github.com/abhigyanpatwari/GitNexus) with a security and stability hardening sweep on the `fix/code-review-2026-04-25` branch. **77 review-flagged findings closed** across the MCP server, HTTP API, CLI, indexer, web UI, eval harness, Docker, and Kubernetes policy — see [CHANGELOG.md](CHANGELOG.md) § "Security & stability hardening sweep" for the full list and [GUARDRAILS.md](GUARDRAILS.md) § "Safety knobs" for new operator env vars. Track upstream via `git remote add upstream https://github.com/abhigyanpatwari/GitNexus.git`.
+
 ⚠️ Important Notice:** GitNexus has NO official cryptocurrency, token, or coin. Any token/coin using the GitNexus name on Pump.fun or any other platform is **not affiliated with, endorsed by, or created by** this project or its maintainers. Do not purchase any cryptocurrency claiming association with GitNexus.
 
 <div align="center">
