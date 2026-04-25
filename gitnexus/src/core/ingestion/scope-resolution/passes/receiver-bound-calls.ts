@@ -48,6 +48,7 @@ import {
   findReceiverTypeBinding,
 } from '../scope/walkers.js';
 import { tryEmitEdge } from '../graph-bridge/edges.js';
+import { TIER_CONFIDENCE } from '../../model/resolution-context.js';
 import { resolveCompoundReceiverClass } from '../passes/compound-receiver.js';
 import { resolveDefGraphId } from '../graph-bridge/ids.js';
 import { narrowOverloadCandidates } from './overload-narrowing.js';
@@ -286,7 +287,24 @@ export function emitReceiverBoundCalls(
               : memberDef.filePath !== parsed.filePath
                 ? 'import-resolved'
                 : 'global';
-          const confidence = site.kind === 'write' || site.kind === 'read' ? 1.0 : 0.85;
+          // GitNexus-4ks: align with TIER_CONFIDENCE — this branch DOES
+          // know whether the resolution was same-file or cross-file
+          // (`memberDef.filePath === parsed.filePath`), so emit the
+          // tier-correct value rather than a flat 0.85 magic number.
+          // Closes the visible 0.95-vs-0.85 mismatch with the legacy
+          // DAG that the parity gate was tripping on.
+          //
+          // The other 0.85 call sites in this file (lines ~199 / 238 /
+          // 265 / 381) are 'global' / heuristic resolutions where 0.85
+          // is a deliberate midpoint between TIER_CONFIDENCE['global']
+          // (0.5) and ['import-scoped'] (0.9) — those are intentional
+          // and stay as-is.
+          const confidence =
+            site.kind === 'write' || site.kind === 'read'
+              ? 1.0
+              : memberDef.filePath === parsed.filePath
+                ? TIER_CONFIDENCE['same-file']
+                : TIER_CONFIDENCE['import-scoped'];
           const ok = tryEmitEdge(
             graph,
             scopes,
@@ -411,7 +429,15 @@ export function emitReceiverBoundCalls(
                 : memberDef.filePath !== parsed.filePath
                   ? 'import-resolved'
                   : 'global';
-            const confidence = site.kind === 'write' || site.kind === 'read' ? 1.0 : 0.85;
+            // GitNexus-4ks: same TIER_CONFIDENCE alignment as the
+            // earlier branch in this file — same-file CALLS get 0.95,
+            // cross-file get 0.9.
+            const confidence =
+              site.kind === 'write' || site.kind === 'read'
+                ? 1.0
+                : memberDef.filePath === parsed.filePath
+                  ? TIER_CONFIDENCE['same-file']
+                  : TIER_CONFIDENCE['import-scoped'];
             const ok = tryEmitEdge(
               graph,
               scopes,

@@ -18,6 +18,7 @@
 import type { Reference, ScopeId, SymbolDefinition } from 'gitnexus-shared';
 import type { KnowledgeGraph } from '../../../graph/types.js';
 import type { ScopeResolutionIndexes } from '../../model/scope-resolution-indexes.js';
+import { TIER_CONFIDENCE } from '../../model/resolution-context.js';
 import type { GraphNodeLookup } from '../graph-bridge/node-lookup.js';
 import { resolveCallerGraphId, resolveDefGraphId } from '../graph-bridge/ids.js';
 
@@ -67,7 +68,11 @@ export function tryEmitEdge(
   targetDef: SymbolDefinition,
   reason: string,
   seen: Set<string>,
-  confidence = 0.85,
+  // GitNexus-4ks: previously 0.85 (a magic number that didn't appear in
+  // TIER_CONFIDENCE). Aligned to 'import-scoped' (0.9) — the safe default
+  // for tryEmitEdge since callers that know the target lives in the same
+  // file pass an explicit `TIER_CONFIDENCE['same-file']` (0.95) override.
+  confidence: number = TIER_CONFIDENCE['import-scoped'],
   collapseByCallerTarget = false,
 ): boolean {
   const callerGraphId = resolveCallerGraphId(site.inScope, scopes, nodeLookup);
