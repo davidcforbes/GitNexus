@@ -7,6 +7,26 @@
  * Config priority: CLI flags > env vars > defaults
  */
 
+/**
+ * Redact bearer tokens / API keys from text that may be surfaced to users
+ * (CLI stdout, CI logs, error messages). Some providers echo Authorization
+ * header values back in 4xx response bodies; without redaction those keys
+ * leak. Patterns covered:
+ *   - Bearer/X-Api-Key headers in plain text
+ *   - sk-/sk_proj_/sk-or-/sk-ant- patterns (OpenAI / OpenRouter / Anthropic)
+ *   - 32+ hex-char strings near key= / api_key= literals
+ *
+ * (GitNexus-nl0, GitNexus-qat)
+ */
+export const redactSecrets = (text: string): string => {
+  if (!text) return text;
+  return text
+    .replace(/Bearer\s+[A-Za-z0-9._\-+/=]{8,}/gi, 'Bearer [REDACTED]')
+    .replace(/(api[-_]?key["':\s=]+)([A-Za-z0-9._\-+/=]{8,})/gi, '$1[REDACTED]')
+    .replace(/(x-api-key["':\s=]+)([A-Za-z0-9._\-+/=]{8,})/gi, '$1[REDACTED]')
+    .replace(/sk-(or-|ant-|proj-)?[A-Za-z0-9_\-]{16,}/g, 'sk-[REDACTED]');
+};
+
 export type LLMProvider = 'openai' | 'openrouter' | 'azure' | 'custom' | 'cursor';
 
 export interface LLMConfig {
@@ -182,7 +202,12 @@ export async function callLLM(
       });
 
       if (!response.ok) {
-        const errorText = await response.text().catch(() => 'unknown error');
+        const rawErrorText = await response.text().catch(() => 'unknown error');
+        // Some providers (Azure, OpenRouter) echo the request Authorization
+        // header value back in error bodies. Strip anything that looks like
+        // a bearer token / API key before letting the message surface in
+        // CLI stdout, CI logs, or UI error states. (GitNexus-nl0)
+        const errorText = redactSecrets(rawErrorText);
 
         // Azure content filter — surface a clear message instead of a generic API error
         if (

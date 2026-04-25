@@ -335,7 +335,19 @@ async function installClaudeCodeHooks(result: SetupResult): Promise<void> {
     }
 
     const hookPath = path.join(destHooksDir, 'gitnexus-hook.cjs').replace(/\\/g, '/');
-    const hookCmd = `node "${hookPath.replace(/"/g, '\\"')}"`;
+    // Hook commands are stored in claude/settings.json as a single string and
+    // executed by Claude Code's hook runner via a shell. Validate the resolved
+    // path has no shell metacharacters before embedding so an unusual install
+    // location can't ship arbitrary code via backticks, $(), |, ;, etc.
+    // (GitNexus-v8d)
+    if (/[`$;|&<>(){}\\\n\r\0]/.test(hookPath) || /\s/.test(hookPath)) {
+      throw new Error(
+        `Refusing to install Claude Code hook: gitnexus install path contains ` +
+          `unsafe characters (whitespace or shell metacharacters): ${hookPath}\n` +
+          `Re-install gitnexus at a path matching ^[A-Za-z0-9._/-]+$`,
+      );
+    }
+    const hookCmd = `node "${hookPath}"`;
 
     // Check which hook events need entries (idempotent: skip if already registered)
     const parsed = await (async () => {
@@ -466,13 +478,23 @@ async function setupCodex(result: SetupResult): Promise<void> {
 
   try {
     const entry = getMcpEntry();
-    await execFileAsync('codex', ['mcp', 'add', 'gitnexus', '--', entry.command, ...entry.args], {
-      shell: process.platform === 'win32',
-    });
+    // Do NOT pass `shell: true` here. The earlier Windows-only `shell:true`
+    // sent the resolved gitnexus binary path through cmd.exe, which would
+    // interpret shell metacharacters in the PATH-resolved path (or in any
+    // future user-supplied entry.args). On Windows, Node's spawn falls back
+    // to looking up codex.cmd / codex.exe directly without a shell.
+    // (GitNexus-twr)
+    await execFileAsync('codex', ['mcp', 'add', 'gitnexus', '--', entry.command, ...entry.args]);
     result.configured.push('Codex');
     return;
-  } catch {
-    // Fallback for environments where `codex` binary isn't on PATH.
+  } catch (err: any) {
+    // ENOENT (codex not on PATH) is the expected fallback trigger. Any
+    // other error gets surfaced through the TOML fallback's reporting so
+    // setup behaviour is unchanged for users.
+    if (err?.code !== 'ENOENT' && process.env.DEBUG) {
+      // Best-effort debug log; suppressed by default to keep setup output clean
+      console.error('Codex CLI invocation failed, falling back to TOML:', err.message);
+    }
   }
 
   try {

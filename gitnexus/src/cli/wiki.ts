@@ -17,7 +17,7 @@ import {
   saveCLIConfig,
 } from '../storage/repo-manager.js';
 import { WikiGenerator, type WikiOptions } from '../core/wiki/generator.js';
-import { resolveLLMConfig, type LLMProvider } from '../core/wiki/llm-client.js';
+import { resolveLLMConfig, redactSecrets, type LLMProvider } from '../core/wiki/llm-client.js';
 import { detectCursorCLI } from '../core/wiki/cursor-client.js';
 
 export interface WikiCommandOptions {
@@ -548,24 +548,31 @@ export const wikiCommand = async (inputPath?: string, options?: WikiCommandOptio
     clearInterval(elapsedTimer);
     bar.stop();
 
-    if (err.message?.includes('No source files')) {
-      console.log(`\n  ${err.message}\n`);
-    } else if (err.message?.includes('content filter')) {
+    // Redact API keys / bearer tokens from any err.message we surface to
+    // the user. HTTP client libraries routinely embed Authorization
+    // headers in error message strings on auth failures; without
+    // redaction those keys leak into terminals and CI logs.
+    // (GitNexus-qat)
+    const safeMessage = redactSecrets(err.message ?? String(err));
+
+    if (safeMessage.includes('No source files')) {
+      console.log(`\n  ${safeMessage}\n`);
+    } else if (safeMessage.includes('content filter')) {
       // Content filter block — actionable message
-      console.log(`\n  Content Filter: ${err.message}\n`);
+      console.log(`\n  Content Filter: ${safeMessage}\n`);
       console.log(
         '  To resolve: rephrase your prompt or adjust the content filter policy for your deployment.\n',
       );
-    } else if (err.message?.includes('API key') || err.message?.includes('API error')) {
-      console.log(`\n  LLM Error: ${err.message}\n`);
+    } else if (safeMessage.includes('API key') || safeMessage.includes('API error')) {
+      console.log(`\n  LLM Error: ${safeMessage}\n`);
 
       // Offer to reconfigure on auth-related failures
       const isAuthError =
-        err.message?.includes('401') ||
-        err.message?.includes('403') ||
-        err.message?.includes('502') ||
-        err.message?.includes('authenticate') ||
-        err.message?.includes('Unauthorized');
+        safeMessage.includes('401') ||
+        safeMessage.includes('403') ||
+        safeMessage.includes('502') ||
+        safeMessage.includes('authenticate') ||
+        safeMessage.includes('Unauthorized');
       if (isAuthError && process.stdin.isTTY) {
         const answer = await new Promise<string>((resolve) => {
           const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
@@ -581,9 +588,13 @@ export const wikiCommand = async (inputPath?: string, options?: WikiCommandOptio
         }
       }
     } else {
-      console.log(`\n  Error: ${err.message}\n`);
+      console.log(`\n  Error: ${safeMessage}\n`);
       if (process.env.GITNEXUS_VERBOSE) {
-        console.error(err);
+        // Verbose path — also redact in case an embedded stack trace
+        // contains a header value.
+        const redacted = new Error(safeMessage);
+        redacted.stack = redactSecrets(err.stack ?? '');
+        console.error(redacted);
       }
     }
     process.exitCode = 1;
