@@ -11,11 +11,38 @@ import os from 'os';
 import fs from 'fs/promises';
 import { isIP } from 'net';
 
-/** Extract the repository name from a git URL (HTTPS or SSH). */
+/**
+ * Extract the repository name from a git URL (HTTPS or SSH).
+ *
+ * Validates the result against a strict allowlist so an attacker can't
+ * craft a URL whose last segment URL-decodes or normalizes into `..`,
+ * a path separator, or a Windows reserved name — which would let
+ * getCloneDir() resolve outside `~/.gitnexus/repos/`. (GitNexus-l9f)
+ */
 export function extractRepoName(url: string): string {
   const cleaned = url.replace(/\/+$/, '');
   const lastSegment = cleaned.split(/[/:]/).pop() || 'unknown';
-  return lastSegment.replace(/\.git$/, '');
+  // URL-decode so `%2F`, `%5C`, etc. can't smuggle separators past the regex
+  let decoded: string;
+  try {
+    decoded = decodeURIComponent(lastSegment);
+  } catch {
+    decoded = lastSegment;
+  }
+  const name = decoded.replace(/\.git$/, '');
+  // Allowed: alphanumerics, dot, underscore, hyphen. Reject path
+  // separators, `..`, null bytes, length 0, length > 255, and Windows
+  // reserved device names (case-insensitive).
+  if (!/^[A-Za-z0-9._-]+$/.test(name)) {
+    throw new Error('Invalid repository name extracted from URL');
+  }
+  if (name === '.' || name === '..' || name.length > 255) {
+    throw new Error('Invalid repository name extracted from URL');
+  }
+  if (/^(con|prn|aux|nul|com[0-9]|lpt[0-9])(\..*)?$/i.test(name)) {
+    throw new Error('Invalid repository name extracted from URL');
+  }
+  return name;
 }
 
 /** Get the clone target directory for a repo name. */
@@ -173,6 +200,13 @@ export async function cloneOrPull(
   targetDir: string,
   onProgress?: (progress: CloneProgress) => void,
 ): Promise<string> {
+  // Validate the URL unconditionally so the SSRF guard runs on the pull
+  // path too. Without this, an attacker who could pre-create
+  // ~/.gitnexus/repos/<name>/.git (symlink, prior failed clone, path
+  // confusion in extractRepoName) would cause `git pull` to run against
+  // a malicious URL on subsequent calls. (GitNexus-tgl)
+  validateGitUrl(url);
+
   const exists = await fs.access(path.join(targetDir, '.git')).then(
     () => true,
     () => false,
@@ -182,7 +216,6 @@ export async function cloneOrPull(
     onProgress?.({ phase: 'pulling', message: 'Pulling latest changes...' });
     await runGit(['pull', '--ff-only'], targetDir);
   } else {
-    validateGitUrl(url);
     await fs.mkdir(path.dirname(targetDir), { recursive: true });
     onProgress?.({ phase: 'cloning', message: `Cloning ${url}...` });
     await runGit(['clone', '--depth', '1', url, targetDir]);

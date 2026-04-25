@@ -122,4 +122,49 @@ describe('git-clone', () => {
       expect(() => validateGitUrl('http://0.0.0.0/repo.git')).toThrow('private/internal');
     });
   });
+
+  // GitNexus-l9f: extractRepoName must reject path traversal payloads
+  describe('extractRepoName allowlist (GitNexus-l9f)', () => {
+    it('rejects ".."', () => {
+      expect(() => extractRepoName('https://example.com/foo/..')).toThrow(
+        'Invalid repository name',
+      );
+    });
+
+    it('rejects URL-encoded path separators', () => {
+      // %2F and %5C decode to / and \ — must not let traversal smuggle past
+      // the allowlist regex.
+      expect(() => extractRepoName('https://example.com/foo%2F..%2Fbar')).toThrow(
+        'Invalid repository name',
+      );
+      expect(() => extractRepoName('https://example.com/foo%5C..%5Cbar')).toThrow(
+        'Invalid repository name',
+      );
+    });
+
+    it('rejects names with embedded null byte', () => {
+      expect(() => extractRepoName('https://example.com/foo%00.git')).toThrow(
+        'Invalid repository name',
+      );
+    });
+
+    it('rejects Windows reserved device names', () => {
+      expect(() => extractRepoName('https://example.com/aux')).toThrow('Invalid repository name');
+      expect(() => extractRepoName('https://example.com/CON.git')).toThrow(
+        'Invalid repository name',
+      );
+      expect(() => extractRepoName('https://example.com/com1')).toThrow('Invalid repository name');
+    });
+
+    it('rejects names containing whitespace', () => {
+      expect(() => extractRepoName('https://example.com/has space')).toThrow(
+        'Invalid repository name',
+      );
+    });
+
+    it('still accepts well-formed names', () => {
+      expect(extractRepoName('https://github.com/user/My-Repo_v2.git')).toBe('My-Repo_v2');
+      expect(extractRepoName('https://github.com/user/repo.with.dots')).toBe('repo.with.dots');
+    });
+  });
 });
