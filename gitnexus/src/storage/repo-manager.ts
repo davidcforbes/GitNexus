@@ -319,10 +319,17 @@ export const addToGitignore = async (repoPath: string): Promise<void> => {
 // ─── Global Registry (~/.gitnexus/registry.json) ───────────────────────
 
 /**
- * Get the path to the global GitNexus directory
+ * Get the path to the global GitNexus directory.
+ *
+ * GITNEXUS_HOME is resolved to an absolute path so a relative value like
+ * `.gitnexus` (which would otherwise be interpreted relative to whatever
+ * cwd each call site happens to have) can't fragment the registry across
+ * multiple cwd-relative locations. (GitNexus-w6f)
  */
 export const getGlobalDir = (): string => {
-  return process.env.GITNEXUS_HOME || path.join(os.homedir(), '.gitnexus');
+  const env = process.env.GITNEXUS_HOME;
+  if (env) return path.resolve(env);
+  return path.join(os.homedir(), '.gitnexus');
 };
 
 /**
@@ -711,6 +718,34 @@ export class UnsafeStoragePathError extends Error {
  * Windows: case-insensitive; POSIX: case-sensitive. Matches the
  * comparison shape used elsewhere in this module.
  */
+/**
+ * Shape-agnostic helper that the clean / remove paths can use without
+ * needing to construct a full RegistryEntry. Same canonicalization
+ * semantics as assertSafeStoragePath but takes a bare path pair.
+ * (GitNexus-cx2)
+ */
+export const assertStoragePathContained = (repoPath: string, storagePath: string): void => {
+  const canonicalRepo = canonicalizePath(repoPath);
+  const canonicalStorage = canonicalizePath(storagePath);
+  const expected = path.join(canonicalRepo, '.gitnexus');
+  const matches =
+    process.platform === 'win32'
+      ? expected.toLowerCase() === canonicalStorage.toLowerCase()
+      : expected === canonicalStorage;
+  if (!matches) {
+    throw new UnsafeStoragePathError(
+      {
+        name: path.basename(repoPath),
+        path: repoPath,
+        storagePath,
+        indexedAt: '',
+      } as RegistryEntry,
+      path.join(path.resolve(repoPath), '.gitnexus'),
+      path.resolve(storagePath),
+    );
+  }
+};
+
 export const assertSafeStoragePath = (entry: RegistryEntry): void => {
   // GitNexus-h1x: also fully canonicalize both sides so symlink games
   // can't slip past. Without this, on macOS `entry.path = /private/var/...`

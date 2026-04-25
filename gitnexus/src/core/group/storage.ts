@@ -34,10 +34,22 @@ export async function writeContractRegistry(
   registry: ContractRegistry,
 ): Promise<void> {
   const targetPath = path.join(groupDir, CONTRACTS_FILE);
-  const tmpPath = `${targetPath}.tmp.${Date.now()}`;
+  // Per-process suffix so concurrent writers don't collide on the temp
+  // path itself (was Date.now() only — same-millisecond collisions
+  // possible on fast hardware). (GitNexus-g09)
+  const tmpPath = `${targetPath}.tmp.${process.pid}.${Date.now()}.${Math.random().toString(36).slice(2, 8)}`;
 
-  await fsp.writeFile(tmpPath, JSON.stringify(registry, null, 2), 'utf-8');
-  await fsp.rename(tmpPath, targetPath);
+  try {
+    await fsp.writeFile(tmpPath, JSON.stringify(registry, null, 2), 'utf-8');
+    await fsp.rename(tmpPath, targetPath);
+  } catch (err) {
+    // GitNexus-g09: if writeFile succeeded but rename failed (cross-device
+    // EXDEV, EPERM under Windows AV, etc.), the .tmp file would have
+    // leaked indefinitely. Best-effort unlink so failed syncs don't
+    // accumulate disk usage in .gitnexus/groups/<name>/.
+    await fsp.unlink(tmpPath).catch(() => {});
+    throw err;
+  }
 }
 
 export async function readContractRegistry(groupDir: string): Promise<ContractRegistry | null> {

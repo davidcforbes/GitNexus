@@ -11,6 +11,7 @@ import {
   unregisterRepo,
   listRegisteredRepos,
   assertSafeStoragePath,
+  assertStoragePathContained,
   UnsafeStoragePathError,
 } from '../storage/repo-manager.js';
 
@@ -81,6 +82,11 @@ export const cleanCommand = async (options?: { force?: boolean; all?: boolean })
   }
 
   try {
+    // GitNexus-cx2: parity with `clean --all`. findRepo derives storagePath
+    // from cwd so it is safe-by-construction today, but if findRepo ever
+    // starts trusting a registry-sourced field, the guard here keeps the
+    // single-repo branch from accidentally rm-ing an unrelated tree.
+    assertStoragePathContained(repo.repoPath, repo.storagePath);
     await fs.rm(repo.storagePath, { recursive: true, force: true });
     await unregisterRepo(repo.repoPath);
     console.log(`Deleted: ${repo.storagePath}`);

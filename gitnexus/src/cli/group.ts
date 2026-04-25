@@ -27,6 +27,23 @@ export function registerGroupCommands(program: Command): void {
       'Add a repo to a group. <groupPath> = hierarchy path (e.g. hr/hiring/backend), <registryName> = name from registry',
     )
     .action(async (groupName: string, groupPath: string, registryName: string) => {
+      // GitNexus-e5j: validate groupPath BEFORE writing it as a YAML key.
+      // Hierarchy paths must be sequences of safe path-segment characters
+      // separated by `/`. Without this, a `..`, `:`, `{`, `[`, or other
+      // YAML-meaningful character would either silently corrupt the
+      // generated yaml (DoS-ing all subsequent group commands when
+      // loadGroupConfig parses) or open up path-confusion attacks once
+      // the value flows into anything that resolves it as a fs path.
+      const VALID_GROUP_PATH = /^[a-zA-Z0-9][a-zA-Z0-9_-]*(?:\/[a-zA-Z0-9][a-zA-Z0-9_-]*)*$/;
+      if (!VALID_GROUP_PATH.test(groupPath)) {
+        console.error(
+          `Invalid group path "${groupPath}". Must match ${VALID_GROUP_PATH} ` +
+            `(alphanumerics, hyphen, underscore, separated by /).`,
+        );
+        process.exitCode = 2;
+        return;
+      }
+
       const { getGroupDir, getDefaultGitnexusDir } = await import('../core/group/storage.js');
       const { loadGroupConfig } = await import('../core/group/config-parser.js');
       const path = await import('node:path');
