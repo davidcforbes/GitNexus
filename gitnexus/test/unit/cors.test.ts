@@ -4,16 +4,18 @@
  * Tests isAllowedOrigin() from server/api.ts, which controls which HTTP
  * Origins are permitted by the Express CORS middleware.
  *
- * Policy:
+ * Policy (default):
  *   - No origin (non-browser)         → allowed
- *   - http://localhost:<port>          → allowed
- *   - http://127.0.0.1:<port>         → allowed
- *   - RFC 1918 private network ranges → allowed
- *       10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16
+ *   - http(s)://localhost / 127.0.0.1 / [::1]  → allowed
  *   - https://gitnexus.vercel.app     → allowed
+ *   - RFC 1918 LAN ranges             → REJECTED (was allowed pre-GitNexus-y28)
  *   - Everything else                 → rejected
+ *
+ * With GITNEXUS_ALLOW_LAN_ORIGINS=1:
+ *   - https://10.x|172.16-31|192.168.x  → allowed
+ *   - http://<any LAN host>             → still rejected (HTTPS required)
  */
-import { describe, it, expect } from 'vitest';
+import { afterEach, beforeEach, describe, it, expect } from 'vitest';
 import { isAllowedOrigin } from '../../src/server/api.js';
 
 // ─── No origin (non-browser / curl) ──────────────────────────────────
@@ -46,6 +48,26 @@ describe('isAllowedOrigin: localhost', () => {
   it('allows http://127.0.0.1:5173', () => {
     expect(isAllowedOrigin('http://127.0.0.1:5173')).toBe(true);
   });
+
+  it('allows http://localhost without port', () => {
+    expect(isAllowedOrigin('http://localhost')).toBe(true);
+  });
+
+  it('allows http://127.0.0.1 without port', () => {
+    expect(isAllowedOrigin('http://127.0.0.1')).toBe(true);
+  });
+
+  it('allows IPv6 loopback http://[::1]:3000', () => {
+    expect(isAllowedOrigin('http://[::1]:3000')).toBe(true);
+  });
+
+  it('allows IPv6 loopback http://[::1] without port', () => {
+    expect(isAllowedOrigin('http://[::1]')).toBe(true);
+  });
+
+  it('allows https://localhost (covers self-signed dev TLS)', () => {
+    expect(isAllowedOrigin('https://localhost:8443')).toBe(true);
+  });
 });
 
 // ─── Deployed site ────────────────────────────────────────────────────
@@ -60,67 +82,87 @@ describe('isAllowedOrigin: vercel.app', () => {
   });
 });
 
-// ─── RFC 1918: 10.0.0.0/8 ────────────────────────────────────────────
+// ─── GitNexus-y28: LAN origins are off by default ────────────────────
 
-describe('isAllowedOrigin: 10.x.x.x (RFC 1918, /8)', () => {
-  it('allows http://10.0.0.1:3000', () => {
-    expect(isAllowedOrigin('http://10.0.0.1:3000')).toBe(true);
+describe('isAllowedOrigin: RFC 1918 default-deny (GitNexus-y28)', () => {
+  let saved: string | undefined;
+  beforeEach(() => {
+    saved = process.env.GITNEXUS_ALLOW_LAN_ORIGINS;
+    delete process.env.GITNEXUS_ALLOW_LAN_ORIGINS;
+  });
+  afterEach(() => {
+    if (saved === undefined) delete process.env.GITNEXUS_ALLOW_LAN_ORIGINS;
+    else process.env.GITNEXUS_ALLOW_LAN_ORIGINS = saved;
   });
 
-  it('allows http://10.1.2.3:5173', () => {
-    expect(isAllowedOrigin('http://10.1.2.3:5173')).toBe(true);
+  it('rejects http://10.0.0.1:3000 by default', () => {
+    expect(isAllowedOrigin('http://10.0.0.1:3000')).toBe(false);
   });
 
-  it('allows http://10.255.255.255:8080', () => {
-    expect(isAllowedOrigin('http://10.255.255.255:8080')).toBe(true);
-  });
-});
-
-// ─── RFC 1918: 172.16.0.0/12 ─────────────────────────────────────────
-
-describe('isAllowedOrigin: 172.16-31.x.x (RFC 1918, /12)', () => {
-  it('allows http://172.16.0.1:3000 (lower bound)', () => {
-    expect(isAllowedOrigin('http://172.16.0.1:3000')).toBe(true);
+  it('rejects http://172.16.0.1:3000 by default', () => {
+    expect(isAllowedOrigin('http://172.16.0.1:3000')).toBe(false);
   });
 
-  it('allows http://172.20.1.2:3000 (middle of range)', () => {
-    expect(isAllowedOrigin('http://172.20.1.2:3000')).toBe(true);
+  it('rejects http://192.168.1.100:5173 by default', () => {
+    expect(isAllowedOrigin('http://192.168.1.100:5173')).toBe(false);
   });
 
-  it('allows http://172.31.255.255:3000 (upper bound)', () => {
-    expect(isAllowedOrigin('http://172.31.255.255:3000')).toBe(true);
-  });
-
-  it('rejects http://172.15.0.1:3000 (below range)', () => {
-    expect(isAllowedOrigin('http://172.15.0.1:3000')).toBe(false);
-  });
-
-  it('rejects http://172.32.0.1:3000 (above range)', () => {
-    expect(isAllowedOrigin('http://172.32.0.1:3000')).toBe(false);
+  it('rejects https://10.0.0.1 even when LAN is disabled', () => {
+    expect(isAllowedOrigin('https://10.0.0.1')).toBe(false);
   });
 });
 
-// ─── RFC 1918: 192.168.0.0/16 ────────────────────────────────────────
+// ─── GitNexus-y28: LAN opt-in requires HTTPS ─────────────────────────
 
-describe('isAllowedOrigin: 192.168.x.x (RFC 1918, /16)', () => {
-  it('allows http://192.168.0.1:3000 (typical home router gateway)', () => {
-    expect(isAllowedOrigin('http://192.168.0.1:3000')).toBe(true);
+describe('isAllowedOrigin: RFC 1918 with GITNEXUS_ALLOW_LAN_ORIGINS=1', () => {
+  let saved: string | undefined;
+  beforeEach(() => {
+    saved = process.env.GITNEXUS_ALLOW_LAN_ORIGINS;
+    process.env.GITNEXUS_ALLOW_LAN_ORIGINS = '1';
+  });
+  afterEach(() => {
+    if (saved === undefined) delete process.env.GITNEXUS_ALLOW_LAN_ORIGINS;
+    else process.env.GITNEXUS_ALLOW_LAN_ORIGINS = saved;
   });
 
-  it('allows http://192.168.1.100:5173', () => {
-    expect(isAllowedOrigin('http://192.168.1.100:5173')).toBe(true);
+  it('still rejects http://10.0.0.1:3000 (HTTPS required even when enabled)', () => {
+    expect(isAllowedOrigin('http://10.0.0.1:3000')).toBe(false);
   });
 
-  it('allows http://192.168.255.254:8080', () => {
-    expect(isAllowedOrigin('http://192.168.255.254:8080')).toBe(true);
+  it('allows https://10.0.0.1:3000', () => {
+    expect(isAllowedOrigin('https://10.0.0.1:3000')).toBe(true);
   });
 
-  it('rejects http://192.167.1.1:3000 (adjacent, not private)', () => {
-    expect(isAllowedOrigin('http://192.167.1.1:3000')).toBe(false);
+  it('allows https://10.255.255.255:8080', () => {
+    expect(isAllowedOrigin('https://10.255.255.255:8080')).toBe(true);
   });
 
-  it('rejects http://192.169.1.1:3000 (adjacent, not private)', () => {
-    expect(isAllowedOrigin('http://192.169.1.1:3000')).toBe(false);
+  it('allows https://172.16.0.1:3000 (lower bound)', () => {
+    expect(isAllowedOrigin('https://172.16.0.1:3000')).toBe(true);
+  });
+
+  it('allows https://172.31.255.255:3000 (upper bound)', () => {
+    expect(isAllowedOrigin('https://172.31.255.255:3000')).toBe(true);
+  });
+
+  it('rejects https://172.15.0.1:3000 (below RFC 1918 range)', () => {
+    expect(isAllowedOrigin('https://172.15.0.1:3000')).toBe(false);
+  });
+
+  it('rejects https://172.32.0.1:3000 (above RFC 1918 range)', () => {
+    expect(isAllowedOrigin('https://172.32.0.1:3000')).toBe(false);
+  });
+
+  it('allows https://192.168.0.1:3000', () => {
+    expect(isAllowedOrigin('https://192.168.0.1:3000')).toBe(true);
+  });
+
+  it('rejects https://192.167.1.1 (adjacent, not private)', () => {
+    expect(isAllowedOrigin('https://192.167.1.1')).toBe(false);
+  });
+
+  it('rejects https://192.169.1.1 (adjacent, not private)', () => {
+    expect(isAllowedOrigin('https://192.169.1.1')).toBe(false);
   });
 });
 
@@ -151,33 +193,8 @@ describe('isAllowedOrigin: rejected origins', () => {
     expect(isAllowedOrigin('')).toBe(false);
   });
 
-  // Localhost without explicit port (port 80 implied)
-  it('allows http://localhost without port', () => {
-    expect(isAllowedOrigin('http://localhost')).toBe(true);
-  });
-
-  it('allows http://127.0.0.1 without port', () => {
-    expect(isAllowedOrigin('http://127.0.0.1')).toBe(true);
-  });
-
-  // IPv6 loopback
-  it('allows IPv6 loopback http://[::1]:3000', () => {
-    expect(isAllowedOrigin('http://[::1]:3000')).toBe(true);
-  });
-
-  it('allows IPv6 loopback http://[::1] without port', () => {
-    expect(isAllowedOrigin('http://[::1]')).toBe(true);
-  });
-
-  // Protocol validation
   it('rejects non-HTTP(S) origins from private IPs', () => {
     expect(isAllowedOrigin('ftp://10.0.0.1')).toBe(false);
     expect(isAllowedOrigin('ftp://192.168.1.1')).toBe(false);
-  });
-
-  it('allows HTTP and HTTPS from private IPs', () => {
-    expect(isAllowedOrigin('http://192.168.1.100')).toBe(true);
-    expect(isAllowedOrigin('https://10.0.0.50')).toBe(true);
-    expect(isAllowedOrigin('http://172.16.5.1:3000')).toBe(true);
   });
 });

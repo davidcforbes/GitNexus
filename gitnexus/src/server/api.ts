@@ -55,20 +55,34 @@ const QUERY_MAX_ROWS = (() => {
 /**
  * Determine whether an HTTP Origin header value is allowed by CORS policy.
  *
- * Permitted origins:
+ * Permitted origins (default):
  * - No origin (non-browser requests such as curl or server-to-server calls)
- * - http://localhost:<port> — local development
- * - http://127.0.0.1:<port> — loopback alias
- * - RFC 1918 private/LAN networks (any port):
- *     10.0.0.0/8      → 10.x.x.x
- *     172.16.0.0/12   → 172.16.x.x – 172.31.x.x
- *     192.168.0.0/16  → 192.168.x.x
+ * - http(s)://localhost / 127.0.0.1 / [::1] — local development
  * - https://gitnexus.vercel.app — the deployed GitNexus web UI
+ *
+ * RFC 1918 LAN origins (10.x.x.x, 172.16-31.x.x, 192.168.x.x) are NOT
+ * allowed by default. Previously they were allowed over plain HTTP from
+ * any port — meaning any page served from another machine on the same
+ * subnet (corporate Wi-Fi, shared coworking network, etc.) could make
+ * full cross-origin requests to the local GitNexus server, including
+ * `DELETE /api/repo`, `POST /api/analyze`, and arbitrary Cypher.
+ * (GitNexus-y28)
+ *
+ * Opt back in by setting `GITNEXUS_ALLOW_LAN_ORIGINS=1`. When enabled,
+ * LAN origins are still required to use **https://** so a passive
+ * network attacker can't spoof one. (Self-signed certs are fine for
+ * intentional intranet deployments — the Origin check just enforces
+ * scheme, not certificate validity.)
  *
  * @param origin - The value of the HTTP `Origin` request header, or `undefined`
  *                 when the header is absent (non-browser request).
  * @returns `true` if the origin is allowed, `false` otherwise.
  */
+// Read at call time (not at module load) so the env var can be flipped
+// per-test without module-level reset gymnastics. Cheap O(1) env access.
+const isLanOriginsEnabled = (): boolean =>
+  process.env.GITNEXUS_ALLOW_LAN_ORIGINS === '1';
+
 export const isAllowedOrigin = (origin: string | undefined): boolean => {
   if (origin === undefined) {
     // Non-browser requests (curl, server-to-server) have no Origin header
@@ -87,8 +101,8 @@ export const isAllowedOrigin = (origin: string | undefined): boolean => {
     return true;
   }
 
-  // RFC 1918 private network ranges — allow any port on these hosts.
-  // We parse the hostname out of the origin URL and check against each range.
+  // RFC 1918 private network ranges — gated behind GITNEXUS_ALLOW_LAN_ORIGINS
+  // and forced to HTTPS-only when enabled.
   let hostname: string;
   let protocol: string;
   try {
@@ -102,6 +116,22 @@ export const isAllowedOrigin = (origin: string | undefined): boolean => {
 
   // Only allow HTTP(S) origins — reject ftp://, file://, etc.
   if (protocol !== 'http:' && protocol !== 'https:') return false;
+
+  // Loopback over https is also acceptable (some browsers send Origin
+  // with scheme baked in — accept either). Falls through the localhost
+  // string match above when the URL form matches; this covers https://
+  // and IPv6-bracket forms parsed via URL.
+  if (
+    hostname === 'localhost' ||
+    hostname === '127.0.0.1' ||
+    hostname === '::1'
+  ) {
+    return true;
+  }
+
+  // From here down: RFC 1918 ranges only.
+  if (!isLanOriginsEnabled()) return false;
+  if (protocol !== 'https:') return false;
 
   const octets = hostname.split('.').map(Number);
   if (octets.length !== 4 || octets.some((o) => !Number.isInteger(o) || o < 0 || o > 255)) {

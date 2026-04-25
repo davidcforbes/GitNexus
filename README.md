@@ -397,6 +397,26 @@ cp .env.example .env
 docker compose --env-file .env up -d
 ```
 
+### Allowing LAN browser origins (intranet deployments)
+
+By default `gitnexus serve` accepts cross-origin requests only from
+`localhost` / `127.0.0.1` / `[::1]` and `https://gitnexus.vercel.app`.
+RFC 1918 LAN origins (10.x, 172.16-31.x, 192.168.x) are rejected so a
+page on another machine on the same Wi-Fi or corporate subnet can't
+issue cross-origin `DELETE /api/repo` etc. against your laptop.
+
+If you intentionally serve the web UI to other LAN clients (intranet
+deployment), opt in with:
+
+```bash
+GITNEXUS_ALLOW_LAN_ORIGINS=1 npx gitnexus serve
+```
+
+When enabled, LAN origins are still required to use **HTTPS** — front
+the server with a TLS-terminating proxy (Caddy, nginx, Traefik) or use
+a self-signed cert. The Origin check enforces scheme, not certificate
+validity.
+
 ### Versioning & supply-chain protection
 
 The Docker images are version-locked to the npm package:
