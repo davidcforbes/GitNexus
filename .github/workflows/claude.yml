@@ -103,7 +103,13 @@ jobs:
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           github_token: ${{ secrets.GITHUB_TOKEN }}
-          allowed_non_write_users: '*'
+          # GitNexus-a6c: removed `allowed_non_write_users: '*'`. The
+          # workflow's outer `if:` guards on author_association already
+          # restrict who can trigger this job, but `*` here told the
+          # action's own internal gate to accept anyone — bypassing the
+          # association check independently of the outer guard. With it
+          # removed, the action's default (write-permission users only)
+          # applies, which matches the intent of the if-guard.
           show_full_output: true
 
           # This is an optional setting that allows Claude to read CI results on PRs

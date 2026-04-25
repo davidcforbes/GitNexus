@@ -89,7 +89,11 @@ jobs:
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           github_token: ${{ secrets.GITHUB_TOKEN }}
-          allowed_non_write_users: '*'
+          # GitNexus-a6c: removed `allowed_non_write_users: '*'`.
+          # The workflow's outer if-guard on author_association already
+          # restricts triggering; the wildcard here told the action's
+          # internal gate to accept anyone, bypassing the association
+          # check independently of the outer guard.
           show_full_output: true
           plugin_marketplaces: 'https://github.com/anthropics/claude-code.git'
           plugins: 'code-review@claude-code-plugins'
