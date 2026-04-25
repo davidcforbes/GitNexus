@@ -569,6 +569,13 @@ async function installSkillsTo(targetDir: string): Promise<string[]> {
 
 /**
  * Recursively copy a directory tree.
+ *
+ * Skips symlinks by default — `fs.readdir({withFileTypes:true})` reports
+ * the entry type without following links, so a symlink in the source
+ * tree (whether bundled in the package, or planted by an attacker who
+ * controls the install dir) doesn't end up writing files outside the
+ * intended dest. Logs the skipped entries so a packaging mistake doesn't
+ * silently drop content. (GitNexus-ebh)
  */
 async function copyDirRecursive(src: string, dest: string): Promise<void> {
   await fs.mkdir(dest, { recursive: true });
@@ -576,11 +583,17 @@ async function copyDirRecursive(src: string, dest: string): Promise<void> {
   for (const entry of entries) {
     const srcPath = path.join(src, entry.name);
     const destPath = path.join(dest, entry.name);
+    if (entry.isSymbolicLink()) {
+      // eslint-disable-next-line no-console
+      console.warn(`[setup] skipping symlink ${srcPath} during recursive copy`);
+      continue;
+    }
     if (entry.isDirectory()) {
       await copyDirRecursive(srcPath, destPath);
-    } else {
+    } else if (entry.isFile()) {
       await fs.copyFile(srcPath, destPath);
     }
+    // Other entry types (sockets, devices) are silently skipped.
   }
 }
 

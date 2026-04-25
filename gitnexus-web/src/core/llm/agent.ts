@@ -314,9 +314,14 @@ export const createGraphRAGAgent = (
     ? buildDynamicSystemPrompt(BASE_SYSTEM_PROMPT, codebaseContext)
     : BASE_SYSTEM_PROMPT;
 
-  // Log the full prompt for debugging
+  // GitNexus-ci7: previously the entire system prompt (which embeds
+  // codebase metadata — cluster names, hotspot file paths, etc.) was
+  // logged on every agent invocation in DEV. Truncate to a short sample
+  // so a developer with DevTools open while screen-sharing doesn't
+  // inadvertently expose codebase shape.
   if (import.meta.env.DEV) {
-    console.log('🤖 AGENT SYSTEM PROMPT:\n', systemPrompt);
+    const sample = systemPrompt.length > 200 ? `${systemPrompt.slice(0, 200)}…` : systemPrompt;
+    console.log(`🤖 AGENT SYSTEM PROMPT (${systemPrompt.length} chars): ${sample}`);
   }
 
   const agent = createReactAgent({

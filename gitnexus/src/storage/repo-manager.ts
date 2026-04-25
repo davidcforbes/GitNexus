@@ -185,12 +185,21 @@ export const loadMeta = async (storagePath: string): Promise<RepoMeta | null> =>
 };
 
 /**
- * Save metadata to storage
+ * Save metadata to storage.
+ *
+ * 0o600 (POSIX) so meta.json — which records repo paths and indexing
+ * stats — isn't world-readable. Matches saveCLIConfig's existing
+ * permission for config.json. (GitNexus-lu7)
  */
 export const saveMeta = async (storagePath: string, meta: RepoMeta): Promise<void> => {
   await fs.mkdir(storagePath, { recursive: true });
   const metaPath = path.join(storagePath, 'meta.json');
   await fs.writeFile(metaPath, JSON.stringify(meta, null, 2), 'utf-8');
+  if (process.platform !== 'win32') {
+    await fs.chmod(metaPath, 0o600).catch(() => {
+      // Best-effort — never fail saveMeta because of permission tightening.
+    });
+  }
 };
 
 /**
@@ -244,8 +253,17 @@ export const findRepo = async (startPath: string): Promise<IndexedRepo | null> =
  * fail with EPERM/EBUSY when antivirus, indexer, or another writer holds
  * the file — we retry a few times with backoff. Used to prevent concurrent
  * `analyze` runs from clobbering each other's writes (GitNexus-dg7, -9j2).
+ *
+ * Optional `mode` (POSIX only) sets the file mode after rename — useful
+ * for files that may contain sensitive metadata (paths to user repos,
+ * future tokens, etc.) so they don't inherit a world-readable umask.
+ * (GitNexus-lu7)
  */
-const atomicWriteFile = async (target: string, data: string): Promise<void> => {
+const atomicWriteFile = async (
+  target: string,
+  data: string,
+  mode?: number,
+): Promise<void> => {
   const tmp = `${target}.tmp.${process.pid}.${Date.now()}.${Math.random().toString(36).slice(2, 8)}`;
   try {
     await fs.writeFile(tmp, data, 'utf-8');
@@ -253,6 +271,11 @@ const atomicWriteFile = async (target: string, data: string): Promise<void> => {
     for (let attempt = 0; attempt < 5; attempt++) {
       try {
         await fs.rename(tmp, target);
+        if (mode !== undefined && process.platform !== 'win32') {
+          // chmod is best-effort; failure here doesn't roll back the write
+          // (the file is already in place under the user's umask).
+          await fs.chmod(target, mode).catch(() => {});
+        }
         return;
       } catch (err) {
         lastErr = err;
@@ -327,11 +350,20 @@ export const readRegistry = async (): Promise<RegistryEntry[]> => {
  *
  * Atomic (temp + rename) so a crash mid-write can never leave a truncated
  * JSON file that makes every subsequent read return []. (GitNexus-dg7)
+ *
+ * 0o600 mode (POSIX) so the on-disk record of all the user's indexed repo
+ * paths isn't world-readable on shared hosts. Already enforced for
+ * config.json (which holds the LLM API key); applied here for parity.
+ * (GitNexus-lu7)
  */
 const writeRegistry = async (entries: RegistryEntry[]): Promise<void> => {
   const dir = getGlobalDir();
   await fs.mkdir(dir, { recursive: true });
-  await atomicWriteFile(getGlobalRegistryPath(), JSON.stringify(entries, null, 2));
+  await atomicWriteFile(
+    getGlobalRegistryPath(),
+    JSON.stringify(entries, null, 2),
+    0o600,
+  );
 };
 
 /**

@@ -16,6 +16,7 @@
  */
 
 import fs from 'fs/promises';
+import path from 'path';
 import lbug from '@ladybugdb/core';
 import { loadFTSExtension } from './lbug-adapter.js';
 
@@ -292,6 +293,38 @@ async function doInitLbug(repoId: string, dbPath: string): Promise<void> {
     await fs.stat(dbPath);
   } catch {
     throw new Error(`LadybugDB not found at ${dbPath}. Run: gitnexus analyze`);
+  }
+
+  // GitNexus-1us defense-in-depth: optional strict mode rejects dbPath
+  // values that traverse a symlink before reaching the on-disk file.
+  // The risk is that doInitLbug runs `INSTALL VECTOR` / `LOAD EXTENSION
+  // VECTOR` directly via available[0].query(), bypassing the
+  // CYPHER_WRITE_RE gate at executeQuery. If the dbPath were a symlink
+  // an attacker placed pointing at a crafted .lbug file, on some
+  // LadybugDB versions the connection-init could trigger extension load
+  // from an attacker-controlled location. Default off (no behaviour
+  // change); set GITNEXUS_LBUG_STRICT_PATH=1 to enable.
+  if (process.env.GITNEXUS_LBUG_STRICT_PATH === '1') {
+    try {
+      const real = await fs.realpath(dbPath);
+      if (path.resolve(real) !== path.resolve(dbPath)) {
+        throw new Error(
+          `Refusing to open LadybugDB via symlink: ${dbPath} → ${real}. ` +
+            `Set GITNEXUS_LBUG_STRICT_PATH=0 to disable this check.`,
+        );
+      }
+    } catch (err) {
+      // realpath ENOENT is impossible after fs.stat above; only re-throw
+      // our own validation errors. Other realpath errors (EACCES on a
+      // parent dir we can stat but not realpath) → fall through, the
+      // subsequent open will fail naturally.
+      if (
+        err instanceof Error &&
+        err.message.startsWith('Refusing to open LadybugDB via symlink')
+      ) {
+        throw err;
+      }
+    }
   }
 
   evictLRU();
