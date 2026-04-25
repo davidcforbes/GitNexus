@@ -483,8 +483,15 @@ cosign download attestation ghcr.io/abhigyanpatwari/gitnexus:1.6.2 \
 For Kubernetes deployments, ship the bundled
 [`ClusterImagePolicy`](deploy/kubernetes/cluster-image-policy.yaml) so the
 [Sigstore policy-controller][policy-controller] rejects any GitNexus pod whose
-image is not signed by this repo's `docker.yml` running from a `vX.Y.Z` tag —
-the same identity the `cosign verify` snippet above pins.
+image is not signed by this repo's `docker.yml`. The policy accepts two
+signing identities (GitNexus-8wn):
+
+* **Stable releases** — `docker.yml@refs/tags/vX.Y.Z` (and `-prerelease` SemVer suffixes), matching the `cosign verify` snippet above.
+* **Release candidates** — `docker.yml@refs/heads/main`, matching the OIDC subject that `release-candidate.yml` produces when it invokes `docker.yml` as a reusable workflow. Without this entry RC images would be rejected from any namespace this policy gates.
+
+If you only want stable images in a given namespace, layer a stricter
+namespace-scoped policy on top — the cluster-wide policy here is the
+permissive baseline.
 
 ```bash
 # 1. Install the controller (one-time, cluster-wide)

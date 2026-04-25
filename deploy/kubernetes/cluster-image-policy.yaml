@@ -82,15 +82,36 @@ spec:
         # Public-good Sigstore Fulcio root.
         url: https://fulcio.sigstore.dev
         identities:
-          # Pin both the OIDC issuer (GitHub Actions) AND the exact workflow
-          # path running from a `vX.Y.Z` (or `vX.Y.Z-prerelease`) tag. Same
+          # ── Stable releases ────────────────────────────────────────
+          # docker.yml runs directly from a `vX.Y.Z` (or `vX.Y.Z-rc.N`
+          # SemVer-prerelease) tag push. Pin the OIDC issuer (GitHub
+          # Actions) AND the exact workflow path + ref shape. Same
           # regex the README's `cosign verify` example uses; it rejects:
           #   * unsigned images
           #   * signatures from any other repo / workflow
-          #   * signatures from non-tag refs (main, PRs, release branches)
-          #   * signatures from arbitrary non-semver tags
+          #   * signatures from non-tag refs OR arbitrary non-semver tags
           - issuer: https://token.actions.githubusercontent.com
             subjectRegExp: ^https://github\.com/abhigyanpatwari/GitNexus/\.github/workflows/docker\.yml@refs/tags/v[0-9]+\.[0-9]+\.[0-9]+(-[a-zA-Z0-9.]+)?$
+
+          # ── Release candidates (GitNexus-8wn) ──────────────────────
+          # release-candidate.yml on `main` invokes docker.yml as a
+          # *reusable* workflow. The OIDC token's subject reflects the
+          # CALLER's ref (refs/heads/main), not the (already-pushed)
+          # vX.Y.Z-rc.N tag — so the stable-release identity above
+          # rejects RC images, leaving them unrunnable in any namespace
+          # this policy gates. Adding the main-branch identity below
+          # lets RC images deploy into staging clusters that share this
+          # ClusterImagePolicy.
+          #
+          # Trust model: this identity ONLY trusts docker.yml when
+          # invoked from refs/heads/main of THIS repo. An attacker who
+          # could push to main could already produce signed stable
+          # images via the regex above by tagging — they don't gain
+          # additional capability from this entry. The image-name globs
+          # restrict which repository's images this signature is
+          # accepted for.
+          - issuer: https://token.actions.githubusercontent.com
+            subjectRegExp: ^https://github\.com/abhigyanpatwari/GitNexus/\.github/workflows/docker\.yml@refs/heads/main$
       # Cross-check the signature against the public Rekor transparency log,
       # so an attacker who briefly compromised Fulcio cannot retroactively
       # mint a signature without leaving a public, append-only audit record.
