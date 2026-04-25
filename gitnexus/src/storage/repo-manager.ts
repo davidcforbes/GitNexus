@@ -680,14 +680,32 @@ export class UnsafeStoragePathError extends Error {
  * comparison shape used elsewhere in this module.
  */
 export const assertSafeStoragePath = (entry: RegistryEntry): void => {
-  const expected = path.join(path.resolve(entry.path), '.gitnexus');
-  const actual = path.resolve(entry.storagePath);
+  // GitNexus-h1x: also fully canonicalize both sides so symlink games
+  // can't slip past. Without this, on macOS `entry.path = /private/var/...`
+  // and `entry.storagePath = /var/.../repo/.gitnexus` (or any other
+  // symlink-equivalent pair) compare unequal as plain strings even
+  // though they resolve to the same on-disk inode — and once they
+  // compare unequal the guard either falsely throws or, in the inverse
+  // case, falsely passes (8.3 short paths on Windows). canonicalizePath
+  // expands symlinks (and Windows 8.3 names) when the path exists, and
+  // falls back to path.resolve when it doesn't.
+  const canonicalRepo = canonicalizePath(entry.path);
+  const canonicalStorage = canonicalizePath(entry.storagePath);
+  const expected = path.join(canonicalRepo, '.gitnexus');
+  const actual = canonicalStorage;
   const matches =
     process.platform === 'win32'
       ? expected.toLowerCase() === actual.toLowerCase()
       : expected === actual;
   if (!matches) {
-    throw new UnsafeStoragePathError(entry, expected, actual);
+    // Pass the un-canonicalized values to the error so user-facing
+    // messages still show the path the user typed / the registry
+    // recorded, not the canonicalized form they may have never seen.
+    throw new UnsafeStoragePathError(
+      entry,
+      path.join(path.resolve(entry.path), '.gitnexus'),
+      path.resolve(entry.storagePath),
+    );
   }
 };
 

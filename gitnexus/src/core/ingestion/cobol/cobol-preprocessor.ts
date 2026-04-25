@@ -521,8 +521,16 @@ const USING_VERB_LOOKAHEAD = [...COBOL_STATEMENT_VERBS, 'CALL']
   .filter((v) => v !== 'GO\\s+TO') // GO TO handled separately with \bGO\s+TO\b
   .map((v) => `\\b${v}(?=\\s|$)`)
   .join('|');
+/**
+ * USING ... <terminator> extractor. The original used an unbounded
+ * `[\s\S]*?` lazy wildcard combined with a 30+ alternative lookahead,
+ * which is a classic ReDoS shape: a hostile COBOL source could put a
+ * long sequence of nearly-matching tokens after USING and force
+ * exponential backtracking. Cap the search distance with a bounded
+ * quantifier — real USING clauses fit in well under 8 KB. (GitNexus-dpl)
+ */
 const RE_USING_PARAMS = new RegExp(
-  `\\bUSING\\s+([\\s\\S]*?)(?=\\bRETURNING\\b|\\bON\\s+(?:EXCEPTION|OVERFLOW)\\b|\\bNOT\\s+ON\\b|\\bEND-CALL\\b|\\bGO\\s+TO\\b|${USING_VERB_LOOKAHEAD}|\\.\\s*$|$)`,
+  `\\bUSING\\s+([\\s\\S]{0,8000}?)(?=\\bRETURNING\\b|\\bON\\s+(?:EXCEPTION|OVERFLOW)\\b|\\bNOT\\s+ON\\b|\\bEND-CALL\\b|\\bGO\\s+TO\\b|${USING_VERB_LOOKAHEAD}|\\.\\s*$|$)`,
   'i',
 );
 

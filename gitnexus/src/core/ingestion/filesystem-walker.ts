@@ -105,14 +105,39 @@ export const readFileContents = async (
       }),
     );
 
-    for (const result of results) {
+    for (let i = 0; i < results.length; i++) {
+      const result = results[i];
       if (result.status === 'fulfilled') {
         contents.set(result.value.path, result.value.content);
+      } else if (process.env.GITNEXUS_VERBOSE || !isExpectedReadError(result.reason)) {
+        // GitNexus-eg7: surface unexpected read failures so silent
+        // indexing gaps don't go unnoticed. Common "expected" failures
+        // (file missing, permission denied) print only in verbose mode
+        // since they often indicate the working tree changed mid-walk.
+        const expected = result.reason as NodeJS.ErrnoException;
+        const filePath = batch[i] ?? '<unknown>';
+        const code = expected?.code ? ` (${expected.code})` : '';
+        // eslint-disable-next-line no-console
+        console.warn(
+          `[ingestion] readFileContents skipped ${filePath}${code}: ${
+            expected?.message ?? String(result.reason)
+          }`,
+        );
       }
     }
   }
 
   return contents;
+};
+
+/**
+ * "Expected" read errors that are noisy when surfaced for every walk on a
+ * dirty working tree. Verbose mode (GITNEXUS_VERBOSE=1) prints them too.
+ * (GitNexus-eg7)
+ */
+const isExpectedReadError = (err: unknown): boolean => {
+  const code = (err as NodeJS.ErrnoException | undefined)?.code;
+  return code === 'ENOENT' || code === 'EISDIR' || code === 'EPERM' || code === 'EACCES';
 };
 
 /**

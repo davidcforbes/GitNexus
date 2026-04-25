@@ -773,6 +773,16 @@ export const processCalls = async (
           bufferSize: getTreeSitterBufferSize(file.content.length),
         });
       } catch (parseError) {
+        // GitNexus-4jr: surface parse failures so silent indexing gaps in
+        // the sequential path don't go unnoticed. Mirrors the worker
+        // path's console.warn at parse-worker.ts:~1409.
+        const err = parseError as Error;
+        // eslint-disable-next-line no-console
+        console.warn(
+          `[call-processor] tree-sitter parse failed for ${file.path}: ${
+            err?.message ?? String(parseError)
+          }`,
+        );
         continue;
       }
       astCache.set(file.path, tree);

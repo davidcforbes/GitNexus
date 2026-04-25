@@ -34,6 +34,23 @@ type WorkerOutgoingMessage =
  * Keeps structured-clone memory bounded per sub-batch.
  */
 const SUB_BATCH_SIZE = 1500;
+/**
+ * Hard ceiling on the wall-clock time a single chunk dispatch is allowed
+ * to consume, in addition to the per-sub-batch timer. Without this, a
+ * worker that always responds just before SUB_BATCH_TIMEOUT_MS (e.g. a
+ * file triggering near-infinite tree-sitter query execution) keeps
+ * resetting the sub-batch timer indefinitely. (GitNexus-19y)
+ *
+ * Default: 6× the sub-batch timeout per chunk × the chunk's expected
+ * work, capped at MAX_CHUNK_WALL_TIMEOUT_MS. Override via
+ * GITNEXUS_CHUNK_WALL_TIMEOUT_MS for very large repos.
+ */
+const MAX_CHUNK_WALL_TIMEOUT_MS = (() => {
+  const env = process.env.GITNEXUS_CHUNK_WALL_TIMEOUT_MS;
+  const parsed = env ? Number(env) : NaN;
+  if (Number.isFinite(parsed) && parsed > 0) return parsed;
+  return 30 * 60 * 1000; // 30 minutes
+})();
 
 /** Per sub-batch timeout. If a single sub-batch takes longer than this,
  *  likely a pathological file (e.g. minified 50MB JS). Fail fast. */
@@ -76,9 +93,35 @@ export const createWorkerPool = (workerUrl: URL, poolSize?: number): WorkerPool 
       return new Promise<TResult>((resolve, reject) => {
         let settled = false;
         let subBatchTimer: ReturnType<typeof setTimeout> | null = null;
+        // GitNexus-19y: overall wall-clock ceiling per chunk so a worker
+        // that keeps resetting the sub-batch timer just before the
+        // 30s deadline can't run forever. Bound proportionally to chunk
+        // size with a hard upper limit of MAX_CHUNK_WALL_TIMEOUT_MS.
+        const numSubBatches = Math.max(1, Math.ceil(chunk.length / SUB_BATCH_SIZE));
+        const wallTimeoutMs = Math.min(
+          numSubBatches * SUB_BATCH_TIMEOUT_MS * 2,
+          MAX_CHUNK_WALL_TIMEOUT_MS,
+        );
+        const wallTimer = setTimeout(() => {
+          if (!settled) {
+            settled = true;
+            cleanup();
+            // Best-effort terminate so the runaway worker's event loop
+            // doesn't keep churning after we've moved on.
+            worker.terminate().catch(() => {});
+            reject(
+              new Error(
+                `Worker ${i} chunk wall-clock timed out after ${wallTimeoutMs / 1000}s ` +
+                  `(${chunk.length} items, ${numSubBatches} sub-batch(es)). ` +
+                  `Set GITNEXUS_CHUNK_WALL_TIMEOUT_MS to raise the ceiling.`,
+              ),
+            );
+          }
+        }, wallTimeoutMs);
 
         const cleanup = () => {
           if (subBatchTimer) clearTimeout(subBatchTimer);
+          clearTimeout(wallTimer);
           worker.removeListener('message', handler);
           worker.removeListener('error', errorHandler);
           worker.removeListener('exit', exitHandler);
