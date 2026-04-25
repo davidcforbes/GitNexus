@@ -288,6 +288,25 @@ interface LanguageProviderConfig {
    *  Default: undefined (no language-specific filtering). */
   readonly builtInNames?: ReadonlySet<string>;
 
+  /**
+   * Auxiliary call extraction beyond what the tree-sitter call query produces.
+   *
+   * Some languages express references to other compilation units in places
+   * that aren't expression-level call syntax — Vue's `<template>` block
+   * names PascalCase components, JSX has `<Component />` element opens,
+   * etc. Tree-sitter-on-`<script>` doesn't see those.
+   *
+   * The hook receives the raw source string and returns a flat list of
+   * called names. The shared call-processor / parse-worker handles the
+   * rest (file-import-scoped resolution + edge emission), so the only
+   * Vue-/JSX-/etc.-specific code stays in the language module.
+   *
+   * Default: undefined (no auxiliary calls extracted).
+   *
+   * (GitNexus-1lg)
+   */
+  readonly auxiliaryCallNamesFromSource?: (fileContent: string) => readonly string[];
+
   // ══════════════════════════════════════════════════════════════════════════
   //  Scope-based resolution hooks (RFC #909 — Ring 1 #911)
   //

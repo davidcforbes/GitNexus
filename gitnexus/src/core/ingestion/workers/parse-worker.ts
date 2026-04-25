@@ -60,11 +60,7 @@ import type { ConstructorBinding } from '../type-env.js';
 import { detectFrameworkFromAST } from '../framework-detection.js';
 import { generateId } from '../../../lib/utils.js';
 import { preprocessImportPath } from '../import-processor.js';
-import {
-  extractVueScript,
-  extractTemplateComponents,
-  isVueSetupTopLevel,
-} from '../vue-sfc-extractor.js';
+import { extractVueScript, isVueSetupTopLevel } from '../vue-sfc-extractor.js';
 import type { NamedBinding } from '../named-bindings/types.js';
 import type { NodeLabel } from 'gitnexus-shared';
 import type { FieldInfo, FieldExtractorContext } from '../field-types.js';
@@ -2288,13 +2284,17 @@ const processFileGroup = (
     // Extract ORM queries (Prisma, Supabase)
     extractORMQueries(file.path, parseContent, result.ormQueries);
 
-    // Vue: emit CALLS edges for components used in <template>
-    if (language === SupportedLanguages.Vue) {
-      const templateComponents = extractTemplateComponents(file.content);
-      for (const componentName of templateComponents) {
+    // Auxiliary call names: language-specific surface forms invisible to
+    // tree-sitter (Vue <template> components, etc.). The provider returns
+    // the names; the call-processor's auxiliary resolver matches them
+    // against the file's import map to emit edges. (GitNexus-1lg —
+    // replaces the previous Vue-specific branch in this file.)
+    const auxNames = provider.auxiliaryCallNamesFromSource?.(file.content);
+    if (auxNames) {
+      for (const calledName of auxNames) {
         result.calls.push({
           filePath: file.path,
-          calledName: componentName,
+          calledName,
           sourceId: generateId('File', file.path),
           callForm: 'free',
         });

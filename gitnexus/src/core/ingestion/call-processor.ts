@@ -70,7 +70,6 @@ import type {
   FileConstructorBindings,
 } from './workers/parse-worker.js';
 import { normalizeFetchURL, routeMatches } from './route-extractors/nextjs.js';
-import { extractTemplateComponents } from './vue-sfc-extractor.js';
 import { extractReturnTypeName, stripNullable } from './type-extractors/shared.js';
 import type { LiteralTypeInferrer } from './type-extractors/types.js';
 import type { SyntaxNode } from './utils/ast-helpers.js';
@@ -1340,36 +1339,37 @@ export const processCalls = async (
       }
     });
 
-    // Vue: emit CALLS edges for PascalCase components used in <template>.
-    // Template components are default-imported (not named), so we match the
-    // component name against imported .vue file basenames via the import map.
-    if (language === SupportedLanguages.Vue) {
-      const templateComponents = extractTemplateComponents(file.content);
-      if (templateComponents.length > 0) {
-        const fileId = generateId('File', file.path);
-        const importedFiles = ctx.importMap.get(file.path);
-        if (importedFiles) {
-          for (const componentName of templateComponents) {
-            for (const importedPath of importedFiles) {
-              if (!importedPath.endsWith('.vue')) continue;
-              const basename = importedPath.slice(
-                importedPath.lastIndexOf('/') + 1,
-                importedPath.lastIndexOf('.'),
-              );
-              if (basename !== componentName) continue;
-              const targetFileId = generateId('File', importedPath);
-              if (graph.getNode(targetFileId)) {
-                graph.addRelationship({
-                  id: generateId('CALLS', `${fileId}:${componentName}->${targetFileId}`),
-                  sourceId: fileId,
-                  targetId: targetFileId,
-                  type: 'CALLS',
-                  confidence: 0.9,
-                  reason: 'vue-template-component',
-                });
-              }
-              break;
+    // Auxiliary call names: language-specific surface forms that aren't
+    // visible to tree-sitter (Vue <template>, JSX element opens, etc.).
+    // Resolved via the file's import map by matching the called name
+    // against the basename of any imported file. (GitNexus-1lg —
+    // replaces the previous Vue-specific branch in this file.)
+    const auxNames = provider.auxiliaryCallNamesFromSource?.(file.content);
+    if (auxNames && auxNames.length > 0) {
+      const fileId = generateId('File', file.path);
+      const importedFiles = ctx.importMap.get(file.path);
+      if (importedFiles) {
+        for (const calledName of auxNames) {
+          for (const importedPath of importedFiles) {
+            const lastSlash = importedPath.lastIndexOf('/');
+            const lastDot = importedPath.lastIndexOf('.');
+            const basename =
+              lastDot > lastSlash
+                ? importedPath.slice(lastSlash + 1, lastDot)
+                : importedPath.slice(lastSlash + 1);
+            if (basename !== calledName) continue;
+            const targetFileId = generateId('File', importedPath);
+            if (graph.getNode(targetFileId)) {
+              graph.addRelationship({
+                id: generateId('CALLS', `${fileId}:${calledName}->${targetFileId}`),
+                sourceId: fileId,
+                targetId: targetFileId,
+                type: 'CALLS',
+                confidence: 0.9,
+                reason: 'auxiliary-call',
+              });
             }
+            break;
           }
         }
       }
@@ -2835,16 +2835,24 @@ export const processCallsFromExtracted = async (
         heritageMap,
       );
       if (!resolved) {
-        // Vue template component fallback: match calledName against imported .vue basenames
-        if (effectiveCall.filePath.endsWith('.vue') && effectiveCall.sourceId.startsWith('File:')) {
+        // Auxiliary-call fallback (GitNexus-1lg — generalised from the
+        // previous Vue-specific branch): when a File-rooted free call
+        // (sourceId starts with 'File:') wasn't resolved by the normal
+        // dispatch and its calledName matches the basename of any
+        // imported file, emit a file → file CALLS edge. This is what
+        // makes Vue's <template> component references and analogous
+        // surface-form calls (JSX <Component/>, etc.) show up as edges
+        // without per-language code in the shared resolver.
+        if (effectiveCall.sourceId.startsWith('File:')) {
           const importedFiles = ctx.importMap.get(effectiveCall.filePath);
           if (importedFiles) {
             for (const importedPath of importedFiles) {
-              if (!importedPath.endsWith('.vue')) continue;
-              const basename = importedPath.slice(
-                importedPath.lastIndexOf('/') + 1,
-                importedPath.lastIndexOf('.'),
-              );
+              const lastSlash = importedPath.lastIndexOf('/');
+              const lastDot = importedPath.lastIndexOf('.');
+              const basename =
+                lastDot > lastSlash
+                  ? importedPath.slice(lastSlash + 1, lastDot)
+                  : importedPath.slice(lastSlash + 1);
               if (basename !== effectiveCall.calledName) continue;
               const targetFileId = generateId('File', importedPath);
               if (graph.getNode(targetFileId)) {
@@ -2857,7 +2865,7 @@ export const processCallsFromExtracted = async (
                   targetId: targetFileId,
                   type: 'CALLS',
                   confidence: 0.9,
-                  reason: 'vue-template-component',
+                  reason: 'auxiliary-call',
                 });
               }
               break;

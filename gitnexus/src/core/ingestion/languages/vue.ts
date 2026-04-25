@@ -28,6 +28,7 @@ import { typescriptVariableConfig } from '../variable-extractors/configs/typescr
 import { createCallExtractor } from '../call-extractors/generic.js';
 import { typescriptCallConfig } from '../call-extractors/configs/typescript-javascript.js';
 import { createHeritageExtractor } from '../heritage-extractors/generic.js';
+import { extractTemplateComponents } from '../vue-sfc-extractor.js';
 
 const VUE_SPECIFIC_BUILT_INS = [
   'ref',
@@ -79,4 +80,9 @@ export const vueProvider = defineLanguage({
   classExtractor: vueClassExtractor,
   heritageExtractor: createHeritageExtractor(SupportedLanguages.TypeScript),
   builtInNames: VUE_BUILT_INS,
+  // GitNexus-1lg: PascalCase component references inside <template> aren't
+  // visible to tree-sitter (which sees only the <script> block). Surface
+  // them as ordinary called names; the shared call-processor + parse-worker
+  // resolve them via the file's import map exactly like a normal call.
+  auxiliaryCallNamesFromSource: (fileContent) => extractTemplateComponents(fileContent),
 });
