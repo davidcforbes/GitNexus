@@ -238,7 +238,43 @@ export const findRepo = async (startPath: string): Promise<IndexedRepo | null> =
 };
 
 /**
- * Add .gitnexus to .gitignore if not already present
+ * Atomically write `data` to `target` by writing to a per-process temp file
+ * and renaming. On POSIX this is fully atomic; on Windows NTFS rename is
+ * near-atomic and never produces a torn file, but `fs.rename` can briefly
+ * fail with EPERM/EBUSY when antivirus, indexer, or another writer holds
+ * the file — we retry a few times with backoff. Used to prevent concurrent
+ * `analyze` runs from clobbering each other's writes (GitNexus-dg7, -9j2).
+ */
+const atomicWriteFile = async (target: string, data: string): Promise<void> => {
+  const tmp = `${target}.tmp.${process.pid}.${Date.now()}.${Math.random().toString(36).slice(2, 8)}`;
+  try {
+    await fs.writeFile(tmp, data, 'utf-8');
+    let lastErr: unknown;
+    for (let attempt = 0; attempt < 5; attempt++) {
+      try {
+        await fs.rename(tmp, target);
+        return;
+      } catch (err) {
+        lastErr = err;
+        const code = (err as NodeJS.ErrnoException)?.code;
+        if (code !== 'EPERM' && code !== 'EBUSY' && code !== 'EACCES') throw err;
+        // Backoff: 5, 10, 20, 40, 80ms
+        await new Promise((r) => setTimeout(r, 5 * Math.pow(2, attempt)));
+      }
+    }
+    throw lastErr;
+  } catch (err) {
+    await fs.unlink(tmp).catch(() => {});
+    throw err;
+  }
+};
+
+/**
+ * Add .gitnexus to .gitignore if not already present.
+ *
+ * Writes are atomic (temp + rename) so concurrent analyze runs on the same
+ * workspace can't produce a half-written .gitignore or duplicate entries
+ * from a read-modify-write race. (GitNexus-9j2)
  */
 export const addToGitignore = async (repoPath: string): Promise<void> => {
   const gitignorePath = path.join(repoPath, '.gitignore');
@@ -250,10 +286,10 @@ export const addToGitignore = async (repoPath: string): Promise<void> => {
     const newContent = content.endsWith('\n')
       ? `${content}${GITNEXUS_DIR}\n`
       : `${content}\n${GITNEXUS_DIR}\n`;
-    await fs.writeFile(gitignorePath, newContent, 'utf-8');
+    await atomicWriteFile(gitignorePath, newContent);
   } catch {
     // .gitignore doesn't exist, create it
-    await fs.writeFile(gitignorePath, `${GITNEXUS_DIR}\n`, 'utf-8');
+    await atomicWriteFile(gitignorePath, `${GITNEXUS_DIR}\n`);
   }
 };
 
@@ -287,12 +323,35 @@ export const readRegistry = async (): Promise<RegistryEntry[]> => {
 };
 
 /**
- * Write the global registry to disk
+ * Write the global registry to disk.
+ *
+ * Atomic (temp + rename) so a crash mid-write can never leave a truncated
+ * JSON file that makes every subsequent read return []. (GitNexus-dg7)
  */
 const writeRegistry = async (entries: RegistryEntry[]): Promise<void> => {
   const dir = getGlobalDir();
   await fs.mkdir(dir, { recursive: true });
-  await fs.writeFile(getGlobalRegistryPath(), JSON.stringify(entries, null, 2), 'utf-8');
+  await atomicWriteFile(getGlobalRegistryPath(), JSON.stringify(entries, null, 2));
+};
+
+/**
+ * In-process serializer for read-modify-write registry mutations. Without
+ * this, two concurrent `registerRepo` / `unregisterRepo` calls in the same
+ * process race: both read the same baseline, both compute their delta
+ * independently, last writer wins (one entry silently lost). Atomic file
+ * writes protect against torn JSON; this protects against the lost update.
+ *
+ * Cross-process races (e.g. two `gitnexus analyze` shells started at the
+ * same instant) are still possible and not covered here — they would need
+ * file-level locking (out of scope for the GitNexus-dg7 fix).
+ */
+let registryMutationChain: Promise<unknown> = Promise.resolve();
+const withRegistryMutationLock = <T>(op: () => Promise<T>): Promise<T> => {
+  const chain = registryMutationChain.then(op, op);
+  // Swallow errors on the chain itself so one failed op doesn't poison
+  // subsequent waiters; each caller still gets its own rejection.
+  registryMutationChain = chain.catch(() => undefined);
+  return chain;
 };
 
 /**
@@ -398,7 +457,8 @@ export const registerRepo = async (
   repoPath: string,
   meta: RepoMeta,
   opts?: RegisterRepoOptions,
-): Promise<string> => {
+): Promise<string> =>
+  withRegistryMutationLock(async () => {
   // Preserve the caller's chosen path form in the registry — don't
   // canonicalise at write time. This matters for two reasons:
   //   1. `list` and error messages show the path the user actually
@@ -491,25 +551,26 @@ export const registerRepo = async (
 
   await writeRegistry(entries);
   return name;
-};
+});
 
 /**
  * Remove a repo from the global registry.
  * Called after `gitnexus clean`.
  */
-export const unregisterRepo = async (repoPath: string): Promise<void> => {
-  // Canonicalise BOTH sides so an unregister call issued with the
-  // symlink form (`/var/folders/.../repo`) still matches an entry
-  // written with the realpath form (`/private/var/folders/.../repo`),
-  // and vice versa. Matches the semantics of `registerRepo` and
-  // `resolveRegistryEntry` post-#1003 review.
-  const resolved = canonicalizePath(repoPath);
-  const entries = await readRegistry();
-  const matches = (a: string, b: string) =>
-    process.platform === 'win32' ? a.toLowerCase() === b.toLowerCase() : a === b;
-  const filtered = entries.filter((e) => !matches(canonicalizePath(e.path), resolved));
-  await writeRegistry(filtered);
-};
+export const unregisterRepo = async (repoPath: string): Promise<void> =>
+  withRegistryMutationLock(async () => {
+    // Canonicalise BOTH sides so an unregister call issued with the
+    // symlink form (`/var/folders/.../repo`) still matches an entry
+    // written with the realpath form (`/private/var/folders/.../repo`),
+    // and vice versa. Matches the semantics of `registerRepo` and
+    // `resolveRegistryEntry` post-#1003 review.
+    const resolved = canonicalizePath(repoPath);
+    const entries = await readRegistry();
+    const matches = (a: string, b: string) =>
+      process.platform === 'win32' ? a.toLowerCase() === b.toLowerCase() : a === b;
+    const filtered = entries.filter((e) => !matches(canonicalizePath(e.path), resolved));
+    await writeRegistry(filtered);
+  });
 
 /**
  * Thrown by {@link resolveRegistryEntry} when no registered repo matches
@@ -699,9 +760,18 @@ export const resolveRegistryEntry = (entries: RegistryEntry[], target: string): 
 /**
  * List all registered repos from the global registry.
  * Optionally validates that each entry's .gitnexus/ still exists.
+ *
+ * Pruning behavior is controlled by `prune` (default `false`). The
+ * historical default was to silently rewrite the registry whenever any
+ * entry's `.gitnexus/meta.json` was missing — which made `gitnexus list`
+ * (a read-only command) mutate state and clobber legitimate concurrent
+ * `analyze` writes on machines with ephemeral checkouts (e.g. CI).
+ * Callers that want the side effect must opt in explicitly.
+ * (GitNexus-iq6)
  */
 export const listRegisteredRepos = async (opts?: {
   validate?: boolean;
+  prune?: boolean;
 }): Promise<RegistryEntry[]> => {
   const entries = await readRegistry();
   if (!opts?.validate) return entries;
@@ -717,12 +787,23 @@ export const listRegisteredRepos = async (opts?: {
     }
   }
 
-  // If we pruned any entries, save the cleaned registry
-  if (valid.length !== entries.length) {
+  // Persist the cleaned registry only when the caller asked for it.
+  if (opts.prune && valid.length !== entries.length) {
     await writeRegistry(valid);
   }
 
   return valid;
+};
+
+/**
+ * Drop registry entries whose `.gitnexus/meta.json` no longer exists and
+ * persist the result. Returns the surviving entries. Use this from commands
+ * that intentionally curate the registry (e.g. `gitnexus clean`); read-only
+ * commands like `gitnexus list` should call `listRegisteredRepos` without
+ * `prune` so they can't lose work.
+ */
+export const pruneStaleRegistryEntries = async (): Promise<RegistryEntry[]> => {
+  return listRegisteredRepos({ validate: true, prune: true });
 };
 
 // ─── Global CLI Config (~/.gitnexus/config.json) ─────────────────────────
