@@ -6,10 +6,10 @@
 
 import type { SuffixIndex } from './utils.js';
 import { tryResolveWithExtensions, suffixResolve } from './utils.js';
-import { resolveRustImportInternal } from './rust.js';
 import { SupportedLanguages } from 'gitnexus-shared';
 import type { ImportResult, ImportResolverStrategy, ResolveCtx } from './types.js';
 import type { TsconfigPaths } from '../language-config.js';
+import { getImportBehavior } from './per-language-behavior.js';
 
 /** Max entries in the resolve cache. Beyond this, entries are evicted.
  *  100K entries ≈ 15MB — covers the most common import patterns. */
@@ -53,62 +53,29 @@ export const resolveImportPath = (
     return result;
   };
 
-  // ---- TypeScript/JavaScript: rewrite path aliases ----
-  if (
-    (language === SupportedLanguages.TypeScript || language === SupportedLanguages.JavaScript) &&
-    tsconfigPaths &&
-    !importPath.startsWith('.')
-  ) {
-    for (const [aliasPrefix, targetPrefix] of tsconfigPaths.aliases) {
-      if (importPath.startsWith(aliasPrefix)) {
-        const remainder = importPath.slice(aliasPrefix.length);
-        // Build the rewritten path relative to baseUrl
-        const rewritten =
-          tsconfigPaths.baseUrl === '.'
-            ? targetPrefix + remainder
-            : tsconfigPaths.baseUrl + '/' + targetPrefix + remainder;
+  // GitNexus-u5y: per-language preprocessing dispatch via the registry
+  // table in per-language-behavior.ts — no `if (language === ...)`
+  // switches in this shared file.
+  const behavior = getImportBehavior(language);
 
-        // Try direct resolution from repo root
-        const resolved = tryResolveWithExtensions(rewritten, allFiles);
-        if (resolved) return cache(resolved);
-
-        // Try suffix matching as fallback
-        const parts = rewritten.split('/').filter(Boolean);
-        const suffixResult = suffixResolve(parts, normalizedFileList, allFileList, index);
-        if (suffixResult) return cache(suffixResult);
-      }
-    }
+  // Path-alias rewrite (TS / JS via tsconfig). On a hit, try direct
+  // resolution against the rewritten path then suffix-match; if both
+  // miss, fall through to the generic resolver below.
+  const aliasHit = behavior.rewriteAliasPath?.(importPath, tsconfigPaths);
+  if (aliasHit) {
+    const resolved = tryResolveWithExtensions(aliasHit.rewritten, allFiles);
+    if (resolved) return cache(resolved);
+    const parts = aliasHit.rewritten.split('/').filter(Boolean);
+    const suffixResult = suffixResolve(parts, normalizedFileList, allFileList, index);
+    if (suffixResult) return cache(suffixResult);
   }
 
-  // ---- Rust: convert module path syntax to file paths ----
-  if (language === SupportedLanguages.Rust) {
-    // Handle grouped imports: use crate::module::{Foo, Bar, Baz}
-    // Extract the prefix path before ::{...} and resolve the module, not the symbols
-    let rustImportPath = importPath;
-    const braceIdx = importPath.indexOf('::{');
-    if (braceIdx !== -1) {
-      rustImportPath = importPath.substring(0, braceIdx);
-    } else if (importPath.startsWith('{') && importPath.endsWith('}')) {
-      // Top-level grouped imports: use {crate::a, crate::b}
-      // Iterate each part and return the first that resolves. This function returns a single
-      // string, so callers that need ALL edges must intercept before reaching here (see the
-      // Rust grouped-import blocks in processImports / processImportsBatch). This fallback
-      // handles any path that reaches resolveImportPath directly.
-      const inner = importPath.slice(1, -1);
-      const parts = inner
-        .split(',')
-        .map((p) => p.trim())
-        .filter(Boolean);
-      for (const part of parts) {
-        const partResult = resolveRustImportInternal(currentFile, part, allFiles);
-        if (partResult) return cache(partResult);
-      }
-      return cache(null);
-    }
-
-    const rustResult = resolveRustImportInternal(currentFile, rustImportPath, allFiles);
-    if (rustResult) return cache(rustResult);
-    // Fall through to generic resolution if Rust-specific didn't match
+  // Module-path rewrite (Rust crate::/super::, including grouped
+  // imports). On a direct resolution hit, return immediately;
+  // otherwise fall through to the generic resolver.
+  const modulePathHit = behavior.rewriteModulePath?.(importPath, currentFile, allFiles);
+  if (modulePathHit) {
+    return cache(modulePathHit.resolved);
   }
 
   // ---- Generic relative import resolution (./ and ../) ----
@@ -137,9 +104,15 @@ export const resolveImportPath = (
     return cache(null);
   }
 
-  // C/C++ includes use actual file paths (e.g. "animal.h") — don't convert dots to slashes
-  const isCpp = language === SupportedLanguages.C || language === SupportedLanguages.CPlusPlus;
-  const pathLike = importPath.includes('/') || isCpp ? importPath : importPath.replace(/\./g, '/');
+  // GitNexus-u5y: dot-handling decision lives on the per-language
+  // behavior. C/C++ #include directives use literal paths like
+  // "animal.h"; everywhere else, dots are package-segment separators
+  // and convert to slashes for suffix matching.
+  const preserveLiteralDots = behavior.preserveLiteralDots ?? false;
+  const pathLike =
+    importPath.includes('/') || preserveLiteralDots
+      ? importPath
+      : importPath.replace(/\./g, '/');
   const pathParts = pathLike.split('/').filter(Boolean);
 
   const resolved = suffixResolve(pathParts, normalizedFileList, allFileList, index);
