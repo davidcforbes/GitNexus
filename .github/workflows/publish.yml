@@ -91,7 +91,11 @@ jobs:
           fi
 
       - name: Create GitHub Release
-        uses: softprops/action-gh-release@b4309332981a82ec1c5618f44dd2e27cc8bfbfda # v2
+        # GitNexus-43m: SHA is on tag v3.0.0 (verified via gh api), not v2
+        # as the previous comment claimed. The pin itself is fine — the SHA
+        # is immutable — but the misleading `# v2` comment hid a major-
+        # version bump from PR review and Dependabot output.
+        uses: softprops/action-gh-release@b4309332981a82ec1c5618f44dd2e27cc8bfbfda # v3.0.0
         with:
           body_path: ${{ steps.changelog.outputs.fallback == 'false' && '/tmp/release-notes.md' || '' }}
           generate_release_notes: ${{ steps.changelog.outputs.fallback == 'true' }}

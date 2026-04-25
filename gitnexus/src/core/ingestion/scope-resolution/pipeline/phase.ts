@@ -112,6 +112,18 @@ export const scopeResolutionPhase: PipelinePhase<ScopeResolutionOutput> = {
       }
     >();
 
+    // GitNexus-gso: this loop MUST stay sequential. The scopeTreeCache
+    // (parseOutput.scopeTreeCache, an LRU shared across iterations) holds
+    // raw tree-sitter Tree handles whose `tree.delete?.()` is invoked by
+    // the LRU's dispose hook. If two languages were processed concurrently
+    // and one's eviction fired tree.delete while the other was still
+    // walking the same Tree (e.g. extractParsedFile re-entering on a
+    // shared file), the native parser state would be corrupted with no
+    // catchable exception. runScopeResolution itself is synchronous and
+    // does not parallelize internally — this for...of awaits each
+    // language's work fully before moving on. Do NOT swap to
+    // Promise.all([...].map(...)) without first making the cache
+    // per-language or moving Tree disposal out-of-band.
     for (const [lang, provider] of SCOPE_RESOLVERS) {
       if (!isRegistryPrimary(lang)) continue;
 

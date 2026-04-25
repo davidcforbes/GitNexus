@@ -60,8 +60,17 @@ export function c3Linearize(
   classId: string,
   parentMap: Map<string, string[]>,
   cache: Map<string, string[] | null>,
+  /**
+   * @deprecated GitNexus-1go: callers should NOT pass this. The
+   * iterative implementation owns its own `visiting` set so a partial
+   * failure on one top-level call can't leak state into the next.
+   * The parameter is kept only for source compatibility — passing it
+   * is a no-op (the implementation always creates a fresh internal
+   * Set, ignoring the argument).
+   */
   inProgress?: Set<string>,
 ): string[] | null {
+  void inProgress;
   if (cache.has(classId)) return cache.get(classId)!;
 
   // Iterative C3 linearization using an explicit work stack. The recursive
@@ -73,7 +82,10 @@ export function c3Linearize(
   //   ENTER (0) – check cache / cycle, push parent frames to compute first
   //   MERGE (1) – all parent linearizations are cached, merge them C3-style
 
-  const visiting = inProgress ?? new Set<string>();
+  // GitNexus-1go: always start with a fresh per-call visiting set even if
+  // a (deprecated) inProgress was passed — the previous shape would carry
+  // state into the next top-level call when a sibling failed mid-traversal.
+  const visiting = new Set<string>();
 
   const ENTER = 0;
   const MERGE = 1;

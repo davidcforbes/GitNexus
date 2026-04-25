@@ -26,6 +26,27 @@ interface MCPSession {
 const SESSION_TTL_MS = 30 * 60 * 1000;
 /** Cleanup sweep runs every 5 minutes */
 const CLEANUP_INTERVAL_MS = 5 * 60 * 1000;
+/**
+ * Hard cap on concurrent MCP sessions. Past this, new initialize POSTs
+ * get a 503 instead of growing the session map without bound. Sized for
+ * typical IDE-side use (one session per editor); raise via
+ * GITNEXUS_MCP_MAX_SESSIONS for shared deployments. (GitNexus-8vx)
+ */
+const DEFAULT_MAX_SESSIONS = 64;
+const MAX_SESSIONS = (() => {
+  const env = process.env.GITNEXUS_MCP_MAX_SESSIONS;
+  const parsed = env ? Number(env) : NaN;
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : DEFAULT_MAX_SESSIONS;
+})();
+
+/**
+ * MCP session-ids are UUIDs (transport-generated via randomUUID()) — so
+ * a client-supplied value that doesn't look like one can never match a
+ * stored entry. Reject obviously-malformed IDs at the door so a flood of
+ * crafted headers can't drive us through the unknown-session 404 branch
+ * thousands of times.
+ */
+const SESSION_ID_RE = /^[a-zA-Z0-9_-]{8,128}$/;
 
 export function mountMCPEndpoints(app: Express, backend: LocalBackend): () => Promise<void> {
   const sessions = new Map<string, MCPSession>();
@@ -49,6 +70,19 @@ export function mountMCPEndpoints(app: Express, backend: LocalBackend): () => Pr
   const handleMcpRequest = async (req: Request, res: Response) => {
     const sessionId = req.headers['mcp-session-id'] as string | undefined;
 
+    // GitNexus-8vx: validate the header shape before using it. Garbage
+    // values (long strings, control chars, etc.) hit the unknown-session
+    // 404 branch — bouncing them at validation costs less and provides a
+    // clearer error.
+    if (sessionId && !SESSION_ID_RE.test(sessionId)) {
+      res.status(400).json({
+        jsonrpc: '2.0',
+        error: { code: -32600, message: 'Malformed mcp-session-id header.' },
+        id: null,
+      });
+      return;
+    }
+
     if (sessionId && sessions.has(sessionId)) {
       // Existing session — delegate to its transport
       const session = sessions.get(sessionId)!;
@@ -62,6 +96,22 @@ export function mountMCPEndpoints(app: Express, backend: LocalBackend): () => Pr
         id: null,
       });
     } else if (req.method === 'POST') {
+      // GitNexus-8vx: bound the session map. Without this a flood of
+      // unauthenticated POSTs to /api/mcp grows the Map (and creates
+      // a new Server + transport per request) until heap or FD
+      // exhaustion — well before the 30-minute TTL eviction can fire.
+      if (sessions.size >= MAX_SESSIONS) {
+        res.status(503).json({
+          jsonrpc: '2.0',
+          error: {
+            code: -32000,
+            message: `MCP session capacity reached (${MAX_SESSIONS}). Try again later or raise GITNEXUS_MCP_MAX_SESSIONS.`,
+          },
+          id: null,
+        });
+        return;
+      }
+
       // No session ID — new client initializing
       const transport = new StreamableHTTPServerTransport({
         sessionIdGenerator: () => randomUUID(),

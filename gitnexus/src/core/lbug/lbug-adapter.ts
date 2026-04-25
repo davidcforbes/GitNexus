@@ -932,19 +932,41 @@ export const executeWithReusedStatement = async (
 export const getLbugStats = async (): Promise<{ nodes: number; edges: number }> => {
   if (!conn) return { nodes: 0, edges: 0 };
 
+  // GitNexus-7ao: collapse the previous N+1 (one COUNT per table)
+  // into a single MATCH (n) RETURN count(n) — one query, one
+  // session-lock acquisition, one round-trip. The label-list version
+  // (`MATCH (n:Foo|Bar|...) ...`) requires every label to exist or
+  // it errors, so we keep the resilient any-label form.
+  // If the single query fails (e.g. on an empty database where no
+  // node tables exist), fall back to the per-table loop so we still
+  // return something useful.
   let totalNodes = 0;
-  for (const tableName of NODE_TABLES) {
-    try {
-      const queryResult = await conn.query(
-        `MATCH (n:${escapeTableName(tableName)}) RETURN count(n) AS cnt`,
-      );
-      const nodeResult = Array.isArray(queryResult) ? queryResult[0] : queryResult;
-      const nodeRows = await nodeResult.getAll();
-      if (nodeRows.length > 0) {
-        totalNodes += Number(nodeRows[0]?.cnt ?? nodeRows[0]?.[0] ?? 0);
+  let usedFastPath = false;
+  try {
+    const queryResult = await conn.query('MATCH (n) RETURN count(n) AS cnt');
+    const result = Array.isArray(queryResult) ? queryResult[0] : queryResult;
+    const rows = await result.getAll();
+    if (rows.length > 0) {
+      totalNodes = Number(rows[0]?.cnt ?? rows[0]?.[0] ?? 0);
+      usedFastPath = true;
+    }
+  } catch {
+    // Fall through to the per-table loop below.
+  }
+  if (!usedFastPath) {
+    for (const tableName of NODE_TABLES) {
+      try {
+        const queryResult = await conn.query(
+          `MATCH (n:${escapeTableName(tableName)}) RETURN count(n) AS cnt`,
+        );
+        const nodeResult = Array.isArray(queryResult) ? queryResult[0] : queryResult;
+        const nodeRows = await nodeResult.getAll();
+        if (nodeRows.length > 0) {
+          totalNodes += Number(nodeRows[0]?.cnt ?? nodeRows[0]?.[0] ?? 0);
+        }
+      } catch {
+        // ignore
       }
-    } catch {
-      // ignore
     }
   }
 

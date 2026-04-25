@@ -43,17 +43,39 @@ spec:
   # The Docker Hub images are byte-for-byte mirrors of the GHCR images (same
   # build, same digest, same Cosign signature), so the same keyless identity
   # authority verifies both.
+  # GitNexus-2xm: globs are tightened so they only match the two actual
+  # image names with a tag/digest suffix, NOT every image whose name
+  # happens to start with `gitnexus`. The previous `gitnexus*` shape
+  # would have matched (and demanded a Cosign signature from) future
+  # images like `gitnexus-experimental` or `gitnexus-fork` if anyone
+  # ever published one to the same namespace — and on a controller
+  # configured fail-open (the default for policy-controller without
+  # `failurePolicy: Fail` on the webhook) the unsigned matching-prefix
+  # image would silently be admitted.
   images:
-    - glob: 'ghcr.io/abhigyanpatwari/gitnexus*'
+    # GHCR — exact base name + any tag/digest suffix
+    - glob: 'ghcr.io/abhigyanpatwari/gitnexus:*'
+    - glob: 'ghcr.io/abhigyanpatwari/gitnexus@*'
+    - glob: 'ghcr.io/abhigyanpatwari/gitnexus-web:*'
+    - glob: 'ghcr.io/abhigyanpatwari/gitnexus-web@*'
     # Docker Hub references can appear in three forms at admission time
     # (`docker.io/...`, `index.docker.io/...`, and bare `akonlabs/...` with
-    # the default registry implied). List all three so the policy cannot be
-    # sidestepped by the choice of registry prefix. The Docker Hub namespace
-    # is `akonlabs` rather than `abhigyanpatwari` because the Docker Hub org
-    # differs from the GitHub org.
-    - glob: 'docker.io/akonlabs/gitnexus*'
-    - glob: 'index.docker.io/akonlabs/gitnexus*'
-    - glob: 'akonlabs/gitnexus*'
+    # the default registry implied). List each shape so the policy cannot
+    # be sidestepped by the choice of registry prefix. The Docker Hub
+    # namespace is `akonlabs` rather than `abhigyanpatwari` because the
+    # Docker Hub org differs from the GitHub org.
+    - glob: 'docker.io/akonlabs/gitnexus:*'
+    - glob: 'docker.io/akonlabs/gitnexus@*'
+    - glob: 'docker.io/akonlabs/gitnexus-web:*'
+    - glob: 'docker.io/akonlabs/gitnexus-web@*'
+    - glob: 'index.docker.io/akonlabs/gitnexus:*'
+    - glob: 'index.docker.io/akonlabs/gitnexus@*'
+    - glob: 'index.docker.io/akonlabs/gitnexus-web:*'
+    - glob: 'index.docker.io/akonlabs/gitnexus-web@*'
+    - glob: 'akonlabs/gitnexus:*'
+    - glob: 'akonlabs/gitnexus@*'
+    - glob: 'akonlabs/gitnexus-web:*'
+    - glob: 'akonlabs/gitnexus-web@*'
   authorities:
     - name: gitnexus-cosign-keyless
       keyless:

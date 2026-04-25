@@ -185,9 +185,25 @@ export function useBackend(): UseBackendResult {
 
   // ── Mount: sync service URL + auto-probe ─────────────────────────────────
 
+  // GitNexus-i3m: only auto-probe when the app itself is loaded from a
+  // localhost origin. If the web UI is ever served from a public host
+  // (gitnexus.vercel.app, GitHub Pages, internal docs portal), every
+  // visitor's browser would otherwise silently issue a GET against
+  // their own http://localhost:4747 on mount — fingerprinting whether
+  // they happen to be running gitnexus and reaching whatever service
+  // is bound to that port. Setting the URL on the service is fine
+  // (it's just bookkeeping); it's the network call we gate.
+  const isLocalOrigin = (() => {
+    if (typeof window === 'undefined') return false;
+    const h = window.location.hostname;
+    return h === 'localhost' || h === '127.0.0.1' || h === '::1' || h === '';
+  })();
+
   useEffect(() => {
     setServiceUrl(backendUrl);
-    void probe();
+    if (isLocalOrigin) {
+      void probe();
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 

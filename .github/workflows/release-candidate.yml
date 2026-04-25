@@ -348,7 +348,9 @@ jobs:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
       - name: Create GitHub prerelease
-        uses: softprops/action-gh-release@b4309332981a82ec1c5618f44dd2e27cc8bfbfda # v2
+        # GitNexus-43m: SHA is on tag v3.0.0 (verified via gh api), not v2.
+        # The pin is immutable — comment fixed for review accuracy.
+        uses: softprops/action-gh-release@b4309332981a82ec1c5618f44dd2e27cc8bfbfda # v3.0.0
         with:
           tag_name: ${{ steps.reltag.outputs.vtag }}
           name: Release Candidate ${{ steps.reltag.outputs.vtag }}

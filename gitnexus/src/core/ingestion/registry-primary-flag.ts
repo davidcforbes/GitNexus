@@ -79,17 +79,44 @@ export function envVarNameFor(lang: SupportedLanguages): string {
 }
 
 /**
+ * Per-process cache for {@link isRegistryPrimary}. The function is called
+ * inside the per-file ingestion loop (call-processor.ts) — for a 200k-file
+ * repo across 16 languages that's ~3.2M calls, each previously doing a
+ * native env-binding lookup via `process.env[...]`. Caching once per
+ * (lang) collapses that to one lookup per language. (GitNexus-dng)
+ *
+ * Tests reset this via {@link resetRegistryPrimaryCache} so env-var flips
+ * inside a test don't leak across cases.
+ */
+const _registryPrimaryCache = new Map<SupportedLanguages, boolean>();
+
+/**
  * Whether `lang` runs through the registry-primary call-resolution path.
  *
  * Resolution order: an explicit env-var value wins (so operators and CI
  * can force either path for a given run), and the default falls back to
  * `MIGRATED_LANGUAGES.has(lang)` — so languages whose migration is
  * complete default to registry-primary without touching any env.
+ *
+ * Cached per process — call {@link resetRegistryPrimaryCache} from tests
+ * that need to flip an env var mid-run.
  */
 export function isRegistryPrimary(lang: SupportedLanguages): boolean {
+  const cached = _registryPrimaryCache.get(lang);
+  if (cached !== undefined) return cached;
   const raw = process.env[envVarNameFor(lang)];
-  if (raw !== undefined) return parseFlag(raw);
-  return MIGRATED_LANGUAGES.has(lang);
+  const value = raw !== undefined ? parseFlag(raw) : MIGRATED_LANGUAGES.has(lang);
+  _registryPrimaryCache.set(lang, value);
+  return value;
+}
+
+/**
+ * Drop the per-process {@link isRegistryPrimary} cache. Use this from
+ * tests that toggle a `REGISTRY_PRIMARY_<LANG>` env var; production
+ * code should never need to call it.
+ */
+export function resetRegistryPrimaryCache(): void {
+  _registryPrimaryCache.clear();
 }
 
 /**
