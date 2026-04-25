@@ -148,6 +148,12 @@ export const formatHybridResults = (results: HybridSearchResult[]): string => {
  * Execute BM25 + semantic search and merge with RRF.
  * Uses LadybugDB FTS for always-fresh BM25 results (no cached data).
  * The semanticSearch function is injected to keep this module environment-agnostic.
+ *
+ * GitNexus-bg3: `repoId` is now threaded into the BM25 lookup. Without
+ * it, searchFTSFromLbug routes to the module-level singleton conn in
+ * lbug-adapter.ts — which means in an MCP server with multiple repos
+ * open, BM25 always queried whichever repo last called initLbug on the
+ * core adapter, NOT the repo the caller's executeQuery is bound to.
  */
 export const hybridSearch = async (
   query: string,
@@ -158,9 +164,10 @@ export const hybridSearch = async (
     query: string,
     k?: number,
   ) => Promise<SemanticSearchResult[]>,
+  repoId?: string,
 ): Promise<HybridSearchResult[]> => {
   // Use LadybugDB FTS for always-fresh BM25 results
-  const bm25Results = await searchFTSFromLbug(query, limit);
+  const bm25Results = await searchFTSFromLbug(query, limit, repoId);
   const semanticResults = await semanticSearch(executeQuery, query, limit);
   return mergeWithRRF(bm25Results, semanticResults, limit);
 };

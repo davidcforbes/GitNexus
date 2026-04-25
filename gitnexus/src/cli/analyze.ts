@@ -43,6 +43,12 @@ function ensureHeap(): boolean {
   if (!nodeOpts.includes('--stack-size')) cliFlags.push(STACK_FLAG);
 
   try {
+    // GitNexus-28h: this re-exec forwards process.argv verbatim into a
+    // child Node process. execFileSync with an args array (not a shell)
+    // is safe — each arg is a separate argv entry and is NOT
+    // re-interpreted by /bin/sh or cmd.exe. Do NOT add `shell: true`
+    // here under any circumstance — it would expose every user-supplied
+    // CLI argument to shell-metacharacter interpretation.
     execFileSync(process.execPath, [...cliFlags, ...process.argv.slice(1)], {
       stdio: 'inherit',
       env: { ...process.env, NODE_OPTIONS: `${nodeOpts} ${HEAP_FLAG}`.trim() },
@@ -171,19 +177,6 @@ export const analyzeCommand = async (inputPath?: string, options?: AnalyzeOption
 
   bar.start(100, 0, { phase: 'Initializing...' });
 
-  // Graceful SIGINT handling
-  let aborted = false;
-  const sigintHandler = () => {
-    if (aborted) process.exit(1);
-    aborted = true;
-    bar.stop();
-    console.log('\n  Interrupted — cleaning up...');
-    closeLbug()
-      .catch(() => {})
-      .finally(() => process.exit(130));
-  };
-  process.on('SIGINT', sigintHandler);
-
   // Route console output through bar.log() to prevent progress bar corruption
   const origLog = console.log.bind(console);
   const origWarn = console.warn.bind(console);
@@ -194,9 +187,32 @@ export const analyzeCommand = async (inputPath?: string, options?: AnalyzeOption
     origLog(args.map((a) => (typeof a === 'string' ? a : String(a))).join(' '));
     bar.update(barCurrentValue);
   };
+  // Helper to put the originals back — called from every exit path so
+  // libraries running during cleanup (closeLbug, etc.) get real
+  // console.* and don't trip over a stopped progress bar.
+  // (GitNexus-3is)
+  const restoreConsole = () => {
+    console.log = origLog;
+    console.warn = origWarn;
+    console.error = origError;
+  };
   console.log = barLog;
   console.warn = barLog;
   console.error = barLog;
+
+  // Graceful SIGINT handling
+  let aborted = false;
+  const sigintHandler = () => {
+    if (aborted) process.exit(1);
+    aborted = true;
+    bar.stop();
+    restoreConsole();
+    console.log('\n  Interrupted — cleaning up...');
+    closeLbug()
+      .catch(() => {})
+      .finally(() => process.exit(130));
+  };
+  process.on('SIGINT', sigintHandler);
 
   // Track elapsed time per phase
   let lastPhaseLabel = 'Initializing...';

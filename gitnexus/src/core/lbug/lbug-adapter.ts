@@ -1282,6 +1282,33 @@ export const loadVectorExtension = async (): Promise<void> => {
  * @param properties - List of properties to index (e.g., ['name', 'code'])
  * @param stemmer - Stemming algorithm (default: 'porter')
  */
+// GitNexus-yj5: identifier patterns for the FTS index call. The current
+// callers all pass hardcoded literals, but this is a public export and
+// any future caller passing user-influenced metadata (e.g. a group name
+// as an index name) would otherwise inject Cypher via the unescaped
+// interpolation below. Allow only conservative identifier shapes.
+const FTS_IDENT_RE = /^[A-Za-z_][A-Za-z0-9_]{0,63}$/;
+const FTS_ALLOWED_STEMMERS = new Set([
+  'none',
+  'arabic',
+  'danish',
+  'dutch',
+  'english',
+  'finnish',
+  'french',
+  'german',
+  'hungarian',
+  'italian',
+  'norwegian',
+  'porter',
+  'portuguese',
+  'romanian',
+  'russian',
+  'spanish',
+  'swedish',
+  'turkish',
+]);
+
 export const createFTSIndex = async (
   tableName: string,
   indexName: string,
@@ -1290,6 +1317,23 @@ export const createFTSIndex = async (
 ): Promise<void> => {
   if (!conn) {
     throw new Error('LadybugDB not initialized. Call initLbug first.');
+  }
+
+  // (GitNexus-yj5) Validate every interpolated identifier against the
+  // allowlist before building the CALL string.
+  if (!FTS_IDENT_RE.test(tableName)) {
+    throw new Error(`Refusing CREATE_FTS_INDEX: invalid tableName ${JSON.stringify(tableName)}`);
+  }
+  if (!FTS_IDENT_RE.test(indexName)) {
+    throw new Error(`Refusing CREATE_FTS_INDEX: invalid indexName ${indexName}`);
+  }
+  for (const p of properties) {
+    if (!FTS_IDENT_RE.test(p)) {
+      throw new Error(`Refusing CREATE_FTS_INDEX: invalid property ${p}`);
+    }
+  }
+  if (!FTS_ALLOWED_STEMMERS.has(stemmer)) {
+    throw new Error(`Refusing CREATE_FTS_INDEX: stemmer must be one of ${[...FTS_ALLOWED_STEMMERS].join(', ')}`);
   }
 
   await loadFTSExtension();

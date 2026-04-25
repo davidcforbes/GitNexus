@@ -10,6 +10,7 @@ The bridge communicates with the MCP server via stdio using the JSON-RPC protoco
 import json
 import logging
 import os
+import shutil
 import subprocess
 import sys
 import threading
@@ -58,8 +59,16 @@ class MCPBridge:
                 logger.error("GitNexus not found. Install with: npm install -g gitnexus")
                 return False
 
+            # GitNexus-17i: when gitnexus_bin is the absolute npx path, prepend
+            # "gitnexus" as the first argument; otherwise (global gitnexus
+            # install path) just call it with "mcp".
+            args = (
+                [gitnexus_bin, "gitnexus", "mcp"]
+                if Path(gitnexus_bin).name.startswith("npx")
+                else [gitnexus_bin, "mcp"]
+            )
             self.process = subprocess.Popen(
-                [gitnexus_bin, "mcp"],
+                args,
                 stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
@@ -153,21 +162,30 @@ class MCPBridge:
         return None
 
     def _find_gitnexus(self) -> str | None:
-        """Find the gitnexus CLI binary."""
+        """Find the gitnexus CLI binary.
+
+        Resolves npx to its absolute path via shutil.which() rather than
+        relying on PATH at subprocess time. Without this, a malicious
+        directory earlier on PATH could shadow the real npx — and since
+        we then call subprocess.Popen with cwd=self.repo_path, any
+        attacker-controlled .npmrc / local npx in repo_path could also
+        win the lookup. (GitNexus-17i)
+        """
         # Check if npx is available (preferred - uses local install)
-        for cmd in ["npx"]:
+        npx_path = shutil.which("npx")
+        if npx_path:
             try:
                 result = subprocess.run(
-                    [cmd, "gitnexus", "--version"],
+                    [npx_path, "gitnexus", "--version"],
                     capture_output=True,
                     text=True,
                     timeout=MCP_FIND_GITNEXUS_TIMEOUT_SECONDS,
                     cwd=self.repo_path,
                 )
                 if result.returncode == 0:
-                    return cmd  # Will use "npx gitnexus mcp"
+                    return npx_path  # Will use "<absolute npx> gitnexus mcp"
             except Exception:
-                continue
+                pass
 
         # Check for global install
         try:
