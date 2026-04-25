@@ -72,8 +72,16 @@ const PEND_RE = /^\/\/\s+PEND\b/i;
 // ── Parameter extractors ───────────────────────────────────────────────
 
 function extractParam(params: string, key: string): string | undefined {
-  // Match KEY=VALUE or KEY='VALUE' in JCL parameter string
-  const re = new RegExp(`${key}=(?:'([^']*)'|(\\S+?))(?:[,\\s]|$)`, 'i');
+  // Match KEY=VALUE or KEY='VALUE' in JCL parameter string.
+  //
+  // Escape `key` before interpolating into the regex literal — current
+  // call sites only pass static strings ('PGM', 'DSN', etc.), but the
+  // function is a generic public utility and any future caller passing
+  // a dynamically-derived key (e.g. a JCL INCLUDE member name) would
+  // be exposed to regex injection / ReDoS via metacharacters.
+  // (GitNexus-myz)
+  const escapedKey = key.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const re = new RegExp(`${escapedKey}=(?:'([^']*)'|(\\S+?))(?:[,\\s]|$)`, 'i');
   const m = params.match(re);
   return m ? (m[1] ?? m[2]) : undefined;
 }

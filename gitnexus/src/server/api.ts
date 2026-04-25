@@ -39,6 +39,20 @@ const _require = createRequire(import.meta.url);
 const pkg = _require('../../package.json');
 
 /**
+ * Hard cap on the number of rows /api/query will return. Streaming the
+ * result lets us stop materialising rows once the cap is hit, so a
+ * query like `MATCH (n) RETURN n` against a large graph can no longer
+ * OOM the Node process. (GitNexus-llm)
+ *
+ * Override via GITNEXUS_API_QUERY_MAX_ROWS for trusted internal callers.
+ */
+const QUERY_MAX_ROWS = (() => {
+  const env = process.env.GITNEXUS_API_QUERY_MAX_ROWS;
+  const parsed = env ? Number(env) : NaN;
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : 1000;
+})();
+
+/**
  * Determine whether an HTTP Origin header value is allowed by CORS policy.
  *
  * Permitted origins:
@@ -790,8 +804,28 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
         return;
       }
       const lbugPath = path.join(entry.storagePath, 'lbug');
-      const result = await withLbugDb(lbugPath, () => executeQuery(cypher));
-      res.json({ result });
+      // Cap the row materialisation to prevent OOM on `MATCH (n) RETURN n`-shaped
+      // queries against large graphs. We stream results and stop after
+      // QUERY_MAX_ROWS so the full result is never held in memory at once.
+      // Override via GITNEXUS_API_QUERY_MAX_ROWS for trusted callers.
+      // (GitNexus-llm)
+      const result = await withLbugDb(lbugPath, async () => {
+        const rows: any[] = [];
+        let truncatedFlag = false;
+        await streamQuery(cypher, (row) => {
+          if (rows.length >= QUERY_MAX_ROWS) {
+            truncatedFlag = true;
+            return;
+          }
+          rows.push(row);
+        });
+        return { rows, truncatedFlag };
+      });
+      res.json({
+        result: result.rows,
+        truncated: result.truncatedFlag,
+        limit: QUERY_MAX_ROWS,
+      });
     } catch (err: any) {
       res.status(500).json({ error: err.message || 'Query failed' });
     }
