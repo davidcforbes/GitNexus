@@ -37,18 +37,21 @@ from rich.table import Table
 
 from utils.errors import is_debug_enabled, log_safe_exception
 
-# Load .env file from eval/ directory
+# Load .env file from eval/ directory.
+#
+# GitNexus-o5c: use python-dotenv (already a declared runtime dependency
+# in pyproject.toml) instead of the previous hand-rolled splitter.
+# The hand-rolled version silently mis-parsed quoted values like
+# `KEY="value with spaces"` (kept the quotes), inline comments
+# (`KEY=value # comment` retained the comment in the value), multi-line
+# strings, and `export FOO=bar` shell-prefix syntax — all of which
+# python-dotenv handles correctly. `override=False` preserves the
+# existing "don't clobber real env vars" behaviour.
 _env_file = Path(__file__).parent / ".env"
 if _env_file.exists():
-    for line in _env_file.read_text().splitlines():
-        line = line.strip()
-        if not line or line.startswith("#"):
-            continue
-        if "=" in line:
-            key, _, value = line.partition("=")
-            key, value = key.strip(), value.strip()
-            if value and key not in os.environ:  # Don't override existing env vars
-                os.environ[key] = value
+    from dotenv import load_dotenv  # local import: keep the dep at runtime, not import
+
+    load_dotenv(dotenv_path=_env_file, override=False)
 
 logger = logging.getLogger("gitnexus_eval")
 console = Console()

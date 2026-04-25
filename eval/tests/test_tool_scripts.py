@@ -42,6 +42,36 @@ def test_payload_builders_use_jq_not_string_concatenation(tool_key):
     assert "jq -n" in pb, f"{tool_key} payload_builder must use `jq -n` for JSON assembly"
 
 
+# ── GitNexus-uwk regression ─────────────────────────────────────────────
+
+def test_gitnexus_pinned_version_is_resolved():
+    """The eval harness must pin its `npm install -g gitnexus@<v>` to the
+    version of the gitnexus package this checkout shipped with — otherwise
+    eval results aren't reproducible across days. The auto-detection walks
+    up from environments/gitnexus_docker.py looking for ../gitnexus/package.json.
+    """
+    import json as _json
+    from pathlib import Path as _Path
+
+    pinned = pytest.importorskip("environments.gitnexus_docker")._GITNEXUS_PINNED_VERSION
+    # Find the sibling gitnexus/package.json the same way the harness does
+    # so the test isn't tightly coupled to the resolution path.
+    here = _Path(__file__).resolve()
+    pkg = None
+    for parent in here.parents:
+        candidate = parent / "gitnexus" / "package.json"
+        if candidate.is_file():
+            pkg = candidate
+            break
+    if pkg is None:
+        pytest.skip("Not running inside a checkout with sibling gitnexus/package.json")
+    expected = _json.loads(pkg.read_text(encoding="utf-8"))["version"]
+    assert pinned == expected, (
+        f"_GITNEXUS_PINNED_VERSION ({pinned!r}) does not match "
+        f"gitnexus/package.json version ({expected!r}) — eval will install the wrong build."
+    )
+
+
 # ── GitNexus-s81 regression ─────────────────────────────────────────────
 
 def test_all_tool_specs_bin_names_are_safe():

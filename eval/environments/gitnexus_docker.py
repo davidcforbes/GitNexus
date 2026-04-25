@@ -22,6 +22,7 @@ Tool call latency: ~50-100ms via eval-server, ~5-10s via CLI fallback.
 import hashlib
 import json
 import logging
+import os
 import re
 import shlex
 import shutil
@@ -46,6 +47,37 @@ EVAL_SERVER_PORT = 4848
 # /usr/local/bin. Catches accidental path separators, shell metacharacters,
 # and absurd lengths. (GitNexus-s81)
 _BIN_NAME_RE = re.compile(r"^[a-z][a-z0-9-]{1,32}$")
+
+
+def _read_gitnexus_pinned_version() -> str | None:
+    """Read the gitnexus version this eval harness was developed against
+    from the sibling gitnexus/package.json. Returns None if the file
+    can't be located or parsed — install_gitnexus then falls back to
+    `latest`. (GitNexus-uwk)
+
+    Lookups, in order:
+      1. GITNEXUS_PIN_VERSION env var (operator override)
+      2. <repo-root>/gitnexus/package.json (monorepo dev / docker build)
+    """
+    env = os.environ.get("GITNEXUS_PIN_VERSION")
+    if env:
+        return env.strip()
+    # Walk up from this file looking for a sibling gitnexus/package.json.
+    here = Path(__file__).resolve()
+    for parent in here.parents:
+        candidate = parent / "gitnexus" / "package.json"
+        if candidate.is_file():
+            try:
+                data = json.loads(candidate.read_text(encoding="utf-8"))
+                ver = data.get("version")
+                if isinstance(ver, str) and ver.strip():
+                    return ver.strip()
+            except (OSError, json.JSONDecodeError):
+                return None
+    return None
+
+
+_GITNEXUS_PINNED_VERSION: str | None = _read_gitnexus_pinned_version()
 
 
 class GitNexusDockerEnvironment(DockerEnvironment):
@@ -120,13 +152,46 @@ class GitNexusDockerEnvironment(DockerEnvironment):
 
         if "NOT_FOUND" in output:
             logger.info("Installing Node.js in container...")
+            # GitNexus-fi8: install Node from the official NodeSource apt
+            # repo using a pre-imported armored GPG key, instead of piping
+            # `setup_20.x` through bash. The previous shape (`curl ... |
+            # bash -`) has no integrity check — a compromised CDN response
+            # OR an attacker who has MITM'd the container's HTTPS would
+            # have run arbitrary root-level code inside the eval container,
+            # which then has docker-socket access in some configs.
             install_cmds = [
                 "apt-get update -qq",
-                # `jq` is required by the tool_registry.py payload builders
-                # (GitNexus-5c1) — without it, the gitnexus-* shell wrappers
-                # would fail at runtime when called by the agent.
-                "apt-get install -y -qq curl ca-certificates jq",
-                "curl -fsSL https://deb.nodesource.com/setup_20.x | bash -",
+                # jq required by tool_registry.py payload builders (GitNexus-5c1).
+                # gnupg required to import the NodeSource signing key.
+                "apt-get install -y -qq curl ca-certificates jq gnupg",
+                # Import NodeSource's signing key from keyserver into a
+                # dedicated keyring (avoids mutating /etc/apt/trusted.gpg).
+                "install -m 0755 -d /etc/apt/keyrings",
+                # NodeSource's well-known signing key. After download we
+                # verify the fingerprint matches the published value before
+                # trusting it for apt — this catches a swapped-key MITM /
+                # CDN compromise that would otherwise be invisible.
+                # (Fingerprint published at:
+                #  https://github.com/nodesource/distributions#installation-instructions)
+                "curl -fsSL https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key "
+                    "-o /tmp/nodesource.asc",
+                # Expected fingerprint (no spaces). If NodeSource rotates
+                # their signing key, this string must be updated and the
+                # new fingerprint reverified out-of-band.
+                'EXPECTED_FP="9FD3B784BC1C6FC31A8A0A1C1655A0AB68576280" && '
+                    "GOT_FP=$(gpg --show-keys --with-fingerprint --with-colons "
+                    "/tmp/nodesource.asc | awk -F: '/^fpr:/{print $10; exit}') && "
+                    'if [ "$GOT_FP" != "$EXPECTED_FP" ]; then '
+                    '  echo "NodeSource GPG key fingerprint mismatch: got $GOT_FP, '
+                    'expected $EXPECTED_FP" >&2; exit 1; fi',
+                "gpg --dearmor -o /etc/apt/keyrings/nodesource.gpg /tmp/nodesource.asc",
+                "rm -f /tmp/nodesource.asc",
+                # Pin the apt source to Node 20.x (matches the previous setup_20.x
+                # behaviour) using the imported keyring for verification.
+                'echo "deb [signed-by=/etc/apt/keyrings/nodesource.gpg] '
+                    'https://deb.nodesource.com/node_20.x nodistro main" '
+                    "> /etc/apt/sources.list.d/nodesource.list",
+                "apt-get update -qq",
                 "apt-get install -y -qq nodejs",
             ]
             for cmd in install_cmds:
@@ -143,12 +208,30 @@ class GitNexusDockerEnvironment(DockerEnvironment):
                 self.execute({"command": "apt-get update -qq && apt-get install -y -qq jq", "timeout": 60})
 
     def _install_gitnexus(self):
-        """Install the gitnexus npm package globally."""
+        """Install the gitnexus npm package globally.
+
+        Pins to the version declared in gitnexus/package.json so eval
+        runs are reproducible — `npm install -g gitnexus` (no version)
+        would resolve `latest` at container-start time, meaning the
+        same eval suite re-run a week later could silently swap in a
+        different code base. (GitNexus-uwk)
+
+        The version is read at harness import time (see
+        `_GITNEXUS_PINNED_VERSION` near the top of this module). If we
+        can't determine it, fall back to `latest` rather than failing
+        — losing reproducibility is preferable to losing the ability
+        to run.
+        """
         check = self.execute({"command": "npx gitnexus --version 2>/dev/null || echo 'NOT_FOUND'"})
         if "NOT_FOUND" in check.get("output", ""):
-            logger.info("Installing gitnexus...")
+            target = (
+                f"gitnexus@{_GITNEXUS_PINNED_VERSION}"
+                if _GITNEXUS_PINNED_VERSION
+                else "gitnexus"
+            )
+            logger.info(f"Installing {target}...")
             result = self.execute({
-                "command": "npm install -g gitnexus",
+                "command": f"npm install -g {target}",
                 "timeout": 60,
             })
             if result.get("returncode", 1) != 0:
