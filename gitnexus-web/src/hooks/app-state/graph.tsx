@@ -1,4 +1,12 @@
-import { createContext, useContext, useCallback, useMemo, useState, ReactNode } from 'react';
+import {
+  createContext,
+  useContext,
+  useCallback,
+  useEffect,
+  useMemo,
+  useState,
+  type ReactNode,
+} from 'react';
 import type { GraphNode, NodeLabel } from 'gitnexus-shared';
 import type { KnowledgeGraph } from '../../core/graph/types';
 import { DEFAULT_VISIBLE_LABELS, DEFAULT_VISIBLE_EDGES, type EdgeType } from '../../lib/constants';
@@ -39,6 +47,21 @@ export const GraphStateProvider = ({ children }: { children: ReactNode }) => {
       prev.includes(edgeType) ? prev.filter((e) => e !== edgeType) : [...prev, edgeType],
     );
   }, []);
+
+  // GitNexus-ave: free the graph reference on provider unmount so a
+  // tens-of-thousands-of-nodes-and-edges KnowledgeGraph doesn't linger
+  // in memory when the provider is destroyed (e.g. on a hot reload or
+  // when the consuming feature is unmounted entirely). Repo-switch
+  // callers should still call setGraph(null) explicitly before loading
+  // the next graph so the old data is GC-eligible during the swap.
+  useEffect(
+    () => () => {
+      setGraph(null);
+      setSelectedNode(null);
+      setHighlightedNodeIds(new Set());
+    },
+    [],
+  );
 
   const value = useMemo<GraphStateContextValue>(
     () => ({

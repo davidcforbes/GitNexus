@@ -1408,11 +1408,14 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
       res.status(404).json({ error: 'Job not found' });
       return;
     }
+    // GitNexus-4ry: omit absolute filesystem paths (repoPath / storagePath)
+    // from the public job-status response. The HTTP server binds to 0.0.0.0
+    // in Docker and CORS allows LAN origins, so any same-network caller
+    // could otherwise enumerate the user's home directory layout.
     res.json({
       id: job.id,
       status: job.status,
       repoUrl: job.repoUrl,
-      repoPath: job.repoPath,
       repoName: job.repoName,
       progress: job.progress,
       error: job.error,

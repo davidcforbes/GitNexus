@@ -202,15 +202,32 @@ export const getBackendUrl = (): string => _backendUrl;
  * Normalize a user-entered server URL into a base URL suitable for setBackendUrl().
  * Adds protocol if missing, strips trailing slashes, and strips a trailing /api suffix
  * (since all API methods append their own /api/... paths to _backendUrl).
+ *
+ * GitNexus-6rs: bare hostnames are no longer silently upgraded to https://.
+ * The previous behaviour (https for anything that wasn't localhost/127.0.0.1)
+ * caused two problems: a typo'd LAN host without TLS would silently fail to
+ * connect (no diagnostic), and a phishing-pasted URL would be persisted as
+ * the backend with no warning. Bare hostnames now require an explicit
+ * scheme — callers get a clear error rather than a silent rewrite.
  */
 export function normalizeServerUrl(input: string): string {
   let url = input.trim().replace(/\/+$/, '');
 
   if (!url.startsWith('http://') && !url.startsWith('https://')) {
-    if (url.startsWith('localhost') || url.startsWith('127.0.0.1')) {
+    if (
+      url === 'localhost' ||
+      url.startsWith('localhost:') ||
+      url.startsWith('localhost/') ||
+      url === '127.0.0.1' ||
+      url.startsWith('127.0.0.1:') ||
+      url.startsWith('127.0.0.1/')
+    ) {
       url = `http://${url}`;
     } else {
-      url = `https://${url}`;
+      throw new Error(
+        `Backend URL "${input}" is missing a scheme. Prefix it with http:// or https:// — ` +
+          `bare non-localhost hostnames are no longer auto-upgraded to https.`,
+      );
     }
   }
 

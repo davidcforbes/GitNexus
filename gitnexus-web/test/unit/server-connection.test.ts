@@ -10,8 +10,16 @@ describe('normalizeServerUrl', () => {
     expect(normalizeServerUrl('127.0.0.1:4747')).toBe('http://127.0.0.1:4747');
   });
 
-  it('adds https:// to non-local hosts', () => {
-    expect(normalizeServerUrl('example.com')).toBe('https://example.com');
+  // GitNexus-6rs: bare non-localhost hostnames must not be silently
+  // upgraded to https — that masked typos / phishing-pasted URLs.
+  it('rejects bare non-local hosts (no scheme)', () => {
+    expect(() => normalizeServerUrl('example.com')).toThrow(/missing a scheme/);
+    expect(() => normalizeServerUrl('192.168.1.50:4747')).toThrow(/missing a scheme/);
+  });
+
+  it('still accepts non-local hosts with an explicit scheme', () => {
+    expect(normalizeServerUrl('https://example.com')).toBe('https://example.com');
+    expect(normalizeServerUrl('http://192.168.1.50:4747')).toBe('http://192.168.1.50:4747');
   });
 
   it('strips trailing slashes', () => {

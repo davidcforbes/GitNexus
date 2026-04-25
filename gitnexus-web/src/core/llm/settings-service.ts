@@ -411,11 +411,21 @@ export const getAvailableModels = (provider: LLMProvider): string[] => {
 };
 
 /**
- * Fetch available models from OpenRouter API
+ * Fetch available models from OpenRouter API.
+ *
+ * Honors `settings.openrouter.baseUrl` when set so a self-hosted /
+ * proxy-routed OpenRouter deployment uses the same base URL the chat
+ * client does. Wraps the fetch in an AbortSignal.timeout so a slow /
+ * hung upstream can't pin the settings panel in an infinite spinner.
+ * (GitNexus-bhl)
  */
 export const fetchOpenRouterModels = async (): Promise<Array<{ id: string; name: string }>> => {
   try {
-    const response = await fetch(`${DEFAULT_OPENROUTER_BASE_URL}/models`);
+    const settings = loadSettings();
+    const baseUrl = settings.openrouter?.baseUrl || DEFAULT_OPENROUTER_BASE_URL;
+    const response = await fetch(`${baseUrl}/models`, {
+      signal: AbortSignal.timeout(10_000),
+    });
     if (!response.ok) throw new Error('Failed to fetch models');
     const data = await response.json();
     return data.data.map((model: any) => ({

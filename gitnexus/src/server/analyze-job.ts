@@ -69,12 +69,19 @@ export class JobManager {
       }
     }
 
+    // GitNexus-bgs: claim the slot with status='cloning' synchronously
+    // BEFORE returning. Previously the job was returned in 'queued' state
+    // and only transitioned to 'cloning' asynchronously by api.ts after
+    // createJob resolved — leaving a ~1ms window in which a second
+    // concurrent POST /api/analyze for a DIFFERENT repo could pass the
+    // single-slot check above (the queued job's same-repo dedup branch
+    // wouldn't fire) and create a duplicate job.
     const job: AnalyzeJob = {
       id: randomUUID(),
-      status: 'queued',
+      status: 'cloning',
       repoUrl: params.repoUrl,
       repoPath: params.repoPath,
-      progress: { phase: 'queued', percent: 0, message: 'Waiting to start...' },
+      progress: { phase: 'cloning', percent: 0, message: 'Starting...' },
       startedAt: Date.now(),
       retryCount: 0,
     };
