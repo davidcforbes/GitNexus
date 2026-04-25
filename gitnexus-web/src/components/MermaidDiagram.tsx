@@ -73,6 +73,20 @@ export const MermaidDiagram = ({ code }: MermaidDiagramProps) => {
         const sanitizedSvg = DOMPurify.sanitize(renderedSvg, {
           USE_PROFILES: { svg: true, svgFilters: true },
           ADD_TAGS: ['foreignObject'],
+          // See GitNexus-sy7. Mermaid htmlLabels:true means node text becomes
+          // HTML inside <foreignObject>; deny scripts/styles/iframes and
+          // common inline-event attributes so a crafted label can't ship JS.
+          FORBID_TAGS: ['script', 'style', 'iframe', 'object', 'embed'],
+          FORBID_ATTR: [
+            'onerror',
+            'onload',
+            'onclick',
+            'onmouseover',
+            'onfocus',
+            'onmouseenter',
+            'onanimationstart',
+            'onanimationend',
+          ],
         });
         setSvg(sanitizedSvg);
         setError(null);

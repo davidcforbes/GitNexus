@@ -162,26 +162,48 @@ export const ProcessFlowModal = ({
         diagramRef.current!.innerHTML = DOMPurify.sanitize(svg, {
           USE_PROFILES: { svg: true, svgFilters: true },
           ADD_TAGS: ['foreignObject'],
+          // Mermaid's htmlLabels:true emits HTML inside <foreignObject>;
+          // without these forbids, an injected node-label payload could carry
+          // script/style/iframe content or inline event handlers. (GitNexus-sy7)
+          FORBID_TAGS: ['script', 'style', 'iframe', 'object', 'embed'],
+          FORBID_ATTR: [
+            'onerror',
+            'onload',
+            'onclick',
+            'onmouseover',
+            'onfocus',
+            'onmouseenter',
+            'onanimationstart',
+            'onanimationend',
+          ],
         });
       } catch (error) {
         console.error('Mermaid render error:', error);
         const errorMessage = error instanceof Error ? error.message : String(error);
         const isSizeError = errorMessage.includes('Maximum') || errorMessage.includes('exceeded');
 
-        diagramRef.current!.innerHTML = `
-          <div class="text-center p-8">
-            <div class="text-red-400 text-sm font-medium mb-2">
-              ${isSizeError ? '📊 Diagram Too Large' : '⚠️ Render Error'}
-            </div>
-            <div class="text-slate-400 text-xs max-w-md">
-              ${
-                isSizeError
-                  ? `This diagram has ${process.steps?.length || 0} steps and is too complex to render. Try viewing individual processes instead of "All Processes".`
-                  : `Unable to render diagram. Steps: ${process.steps?.length || 0}`
-              }
-            </div>
-          </div>
-        `;
+        // Use imperative DOM creation rather than an innerHTML template — the
+        // current interpolation only embeds static strings + a number, but a
+        // future maintainer who interpolates `errorMessage` (which echoes the
+        // raw mermaid source) would create an XSS sink. (GitNexus-hv8)
+        const wrapper = document.createElement('div');
+        wrapper.className = 'text-center p-8';
+
+        const title = document.createElement('div');
+        title.className = 'text-red-400 text-sm font-medium mb-2';
+        title.textContent = isSizeError ? '📊 Diagram Too Large' : '⚠️ Render Error';
+
+        const detail = document.createElement('div');
+        detail.className = 'text-slate-400 text-xs max-w-md';
+        const stepCount = process.steps?.length || 0;
+        detail.textContent = isSizeError
+          ? `This diagram has ${stepCount} steps and is too complex to render. Try viewing individual processes instead of "All Processes".`
+          : `Unable to render diagram. Steps: ${stepCount}`;
+
+        wrapper.appendChild(title);
+        wrapper.appendChild(detail);
+
+        diagramRef.current!.replaceChildren(wrapper);
       }
     };
 
