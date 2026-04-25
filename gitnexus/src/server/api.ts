@@ -83,6 +83,36 @@ const QUERY_MAX_ROWS = (() => {
 const isLanOriginsEnabled = (): boolean =>
   process.env.GITNEXUS_ALLOW_LAN_ORIGINS === '1';
 
+/**
+ * Detect Windows UNC paths and device-namespace paths that pre-`path.resolve`
+ * checks treat as ordinary absolute paths. (GitNexus-a4r)
+ *
+ * Catches:
+ *   - DOS device namespace:   `\\?\C:\foo`, `\\.\PIPE\foo`
+ *     (and their forward-slash variants `//?/C:/foo`, `//./PIPE/foo`)
+ *   - UNC server-share paths: `\\server\share\...` and `//server/share/...`
+ *
+ * On Windows, `path.isAbsolute` returns true for both shapes and
+ * `path.normalize` === `path.resolve` for them, so the older two-check
+ * `/api/analyze` guard let through `\\.\pipe\foo`, `\\?\C:\foo`,
+ * UNC shares, and similar — paths that would then be opened by the
+ * indexer and could touch arbitrary device endpoints / network shares.
+ *
+ * Exported for unit testing — not consumed by callers other than the
+ * inline check inside the analyze route.
+ */
+export const isWindowsUncOrDevicePath = (p: string): boolean => {
+  if (!p || p.length < 2) return false;
+  // Normalize forward slashes so both `\\?\` and `//?/` are caught.
+  const head4 = p.slice(0, 4).replace(/\//g, '\\');
+  if (head4 === '\\\\?\\' || head4 === '\\\\.\\') return true;
+  // UNC: `\\server\share` or `//server/share` (but NOT `\\?\` / `\\.\`,
+  // which we already returned true for above).
+  const head2 = p.slice(0, 2).replace(/\//g, '\\');
+  if (head2 === '\\\\') return true;
+  return false;
+};
+
 export const isAllowedOrigin = (origin: string | undefined): boolean => {
   if (origin === undefined) {
     // Non-browser requests (curl, server-to-server) have no Origin header
@@ -1226,14 +1256,32 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
         return;
       }
 
-      // Path validation: require absolute path, reject traversal (e.g. /tmp/../etc/passwd)
+      // Path validation: require absolute path, reject traversal, reject
+      // null bytes, and on Windows reject UNC + device-namespace forms
+      // (\\?\, \\.\, \\server\share, etc.). path.isAbsolute returns true
+      // for both UNC and device paths on win32, and path.normalize ===
+      // path.resolve for them — so the older two-check guard was
+      // bypassable. (GitNexus-a4r)
       if (repoLocalPath) {
+        // Reject null bytes - they truncate the path inside libc/native
+        // filesystem APIs and were a classic bypass for rejected-prefix
+        // checks.
+        if (/\x00/.test(repoLocalPath)) {
+          res.status(400).json({ error: '"path" must not contain null bytes' });
+          return;
+        }
         if (!path.isAbsolute(repoLocalPath)) {
           res.status(400).json({ error: '"path" must be an absolute path' });
           return;
         }
         if (path.normalize(repoLocalPath) !== path.resolve(repoLocalPath)) {
           res.status(400).json({ error: '"path" must not contain traversal sequences' });
+          return;
+        }
+        if (process.platform === 'win32' && isWindowsUncOrDevicePath(repoLocalPath)) {
+          res
+            .status(400)
+            .json({ error: '"path" must not be a UNC or Windows device-namespace path' });
           return;
         }
       }
